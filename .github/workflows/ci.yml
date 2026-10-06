@@ -1,0 +1,115 @@
+# Hosted CI: the full scripts/ci.sh pipeline on every push and pull request to main.
+# cosign and SLSA are SKIPPED here (they run only in release-sign.yml, keyless);
+# scripts/ci.sh prints "SKIPPED: runs in .github/workflows/release-sign.yml (hosted CI, keyless)".
+#
+# release-sign.yml calls this same workflow (workflow_call, release-artifacts: true), so
+# the release artefacts come from a build that passed the full pipeline in the same job.
+#
+# Every third-party action is pinned by full commit SHA (tag in the comment); how each
+# SHA was verified: docs/verification/tooling-phase2.md. Nothing is cached between runs
+# (no actions/cache, setup-node caching off): every tool is fetched and hash-verified by
+# scripts/install-tools-phase2.sh on a clean runner.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+    inputs:
+      release-artifacts:
+        description: Also build the release artefacts (dist tarball, SBOM) and their SLSA subjects
+        type: boolean
+        default: false
+    outputs:
+      hashes:
+        description: base64 of `sha256sum` over the release artefacts (SLSA generator subjects)
+        value: ${{ jobs.ci.outputs.hashes }}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # The Semgrep venv is verified file by file against hashes derived with /usr/bin/python3
+    # 3.14.4 (tools/verify-venv.py pins pyvenv.cfg, which records the Python version and
+    # home). ubuntu-latest's own Python differs, so the job runs in Ubuntu 26.04, pinned by
+    # digest, with its packages from a fixed Ubuntu snapshot (first step).
+    container:
+      image: ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78 # resolute-20260912
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      hashes: ${{ steps.release.outputs.hashes }}
+    steps:
+      - name: "OS packages: fixed Ubuntu snapshot, apt-verified"
+        env:
+          APT_SNAPSHOT: 20260928T000000Z
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          # apt checks every index against the signed InRelease (ubuntu-archive-keyring, part of
+          # the pinned image) and every .deb against the index hashes, over HTTP or HTTPS.
+          # 1) CA certificates, which HTTPS to snapshot.ubuntu.com needs, from the image's own sources.
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates
+          # 2) Everything else from the Ubuntu snapshot of $APT_SNAPSHOT, so versions can't drift.
+          rm -f /etc/apt/sources.list.d/*.sources /etc/apt/sources.list
+          printf '%s\n' 'Types: deb' "URIs: https://snapshot.ubuntu.com/ubuntu/$APT_SNAPSHOT/" \
+            'Suites: resolute resolute-updates resolute-security' 'Components: main universe' \
+            'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' > /etc/apt/sources.list.d/snapshot.sources
+          rm -rf /var/lib/apt/lists/*
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            python3.14=3.14.4-1ubuntu0.2 python3=3.14.3-0ubuntu2 git curl xz-utils
+          test "$(/usr/bin/python3 -c 'import sys; print(sys.version.split()[0])')" = 3.14.4
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+
+      - name: Tools (pinned, hash-verified)
+        run: bash scripts/install-tools-phase2.sh
+
+      - name: OSV database (offline SCA)
+        run: bash scripts/fetch-osv-db.sh
+
+      - name: CI pipeline
+        run: bash scripts/ci.sh
+
+      # ---- release-sign.yml only ------------------------------------------------------
+      # npm pack is not used: the package is private, has no "files" list, and npm pack
+      # then follows .gitignore, which excludes dist/. Its tarball would hold the sources
+      # (and .claude/, docs/) but not the build. So the artefact is a reproducible tar of
+      # dist/ (sorted, mtime 0, numeric root owner, gzip without name or time).
+      - name: Release artefacts and SLSA subjects
+        id: release
+        if: inputs.release-artifacts
+        run: |
+          set -euo pipefail
+          rm -rf release && mkdir release
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - dist \
+            | gzip -9n > release/arc-rail-adapter-dist.tar.gz
+          cp sbom.cdx.json release/sbom.cdx.json
+          cd release
+          sha256sum arc-rail-adapter-dist.tar.gz sbom.cdx.json > SHA256SUMS
+          cat SHA256SUMS
+          echo "hashes=$(base64 -w0 SHA256SUMS)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release artefacts
+        if: inputs.release-artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-artifacts
+          path: release/
+          if-no-files-found: error
+          retention-days: 90

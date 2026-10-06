@@ -15,8 +15,11 @@
 #   9 secrets         gitleaks (--no-git: the repo has no commits yet)
 #  10 SBOM            CycloneDX 1.6 from package-lock.json, runtime dependencies only (`npm run sbom`),
 #                     every component with its lockfile SHA-512 (distribution hash)
-#  11 signing, provenance   SKIPPED (G2): see skipped_g2 below; CI fails if docs/GATES.md
-#                     shows G2 as anything but NOT SIGNED while they are skipped (tools/g2-precondition.mjs)
+#  11 signing, provenance   SKIPPED here: they run keyless (GitHub OIDC) in
+#                     .github/workflows/release-sign.yml, never locally or in ci.yml (docs/CI.md).
+#                     G2 precondition (tools/g2-precondition.mjs): a signed G2 row in docs/GATES.md
+#                     must cite a release-sign run (https://github.com/MrsNqobiG/ArcRail/actions/runs/<id>),
+#                     or CI fails
 #
 # Network: only stage 1 (registry.npmjs.org, or the npm cache), plus the tool
 # installer if a pinned tool is missing (it only re-verifies hashes otherwise). The OSV database
@@ -40,16 +43,17 @@ step() { printf '\n==> %s\n' "$1"; }
 PLANT_DIR=""
 trap 'rm -rf "$PLANT_DIR"' EXIT
 
-skipped_g2() {
+delegated_g2() {
   # $1 = step name, $2 = binary name
   step "$1"
   if command -v "$2" >/dev/null 2>&1; then
-    echo "FAIL: $2 is installed but the $1 step is not wired in yet (tracked); wire it before relying on CI."
+    echo "FAIL: $2 is installed here, but this stage runs only in .github/workflows/release-sign.yml;"
+    echo "remove it from this environment's PATH so a local or ci.yml run can't pass for a signing run."
     return 1
   fi
-  echo "SKIPPED (G2 prerequisite, tracked): keyless signing and SLSA provenance need a CI workload"
-  echo "identity (OIDC). There is none locally, and no long-lived signing key is ever created here."
-  echo "This stage belongs in hosted CI before G2 (RUBRIC MC-33)."
+  echo "SKIPPED: runs in .github/workflows/release-sign.yml (hosted CI, keyless)"
+  echo "  Keyless signing and SLSA provenance need a CI workload identity (GitHub OIDC); none exists"
+  echo "  here, and no long-lived signing key is ever created. G2 evidence = a cited release-sign run."
 }
 
 step "toolchain and tool integrity"
@@ -162,10 +166,10 @@ if (missing.length > 0) {
 console.log(`SBOM ok: CycloneDX ${s.specVersion}, ${all.length} runtime components, ${all.length} with a SHA-512 distribution hash`);
 '
 
-skipped_g2 "signing: cosign (G2)" cosign
-skipped_g2 "provenance: SLSA (G2)" slsa-verifier
+delegated_g2 "signing: cosign (G2)" cosign
+delegated_g2 "provenance: SLSA (G2)" slsa-verifier
 
-step "G2 precondition: cosign and SLSA must not be SKIPPED once G2 is signed (MC-33)"
-node tools/g2-precondition.mjs docs/GATES.md cosign slsa
+step "G2 precondition: a signed G2 row must cite the release-sign run that signed and verified (MC-33)"
+node tools/g2-precondition.mjs docs/GATES.md --delegated=cosign,slsa
 
 printf '\nCI PASSED\n'

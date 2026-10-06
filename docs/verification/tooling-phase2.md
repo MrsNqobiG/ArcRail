@@ -140,12 +140,71 @@ Every lockfile entry still carries an `integrity` hash.
 - That record only appears reliably with `--package-lock-only`. Without it, the tool reads `npm ls`, which drops `integrity` once vitest or Stryker has touched `node_modules` (observed: 15/15 hashed straight after `npm ci`, 0/15 after a test run).
 - ci.sh fails if any component lacks a distribution hash. Result: 15/15.
 
-## cosign and SLSA (m5): SKIPPED, enforced as a G2 precondition
-- **Not done:** keyless cosign signing and SLSA provenance both need an OIDC workload identity (Fulcio and Rekor through a hosted CI token). None exists on this workstation.
-- **No substitute:** generating a long-lived signing key would break CLAUDE.md rule 2 (no secrets) and give no meaningful identity.
-- **CI behaviour:** both stages print SKIPPED with this reason. The script still fails if `cosign` or `slsa-verifier` is installed but not wired in.
-- **Before G2:** hosted CI (for example GitHub Actions with `id-token: write`) must produce and verify both before G2 (RUBRIC MC-33).
-- **Enforced:** `tools/g2-precondition.mjs` runs as the last CI stage. It fails if the G2 row of docs/GATES.md is anything but `NOT SIGNED…` while cosign or SLSA is SKIPPED. A missing or duplicated G2 row also fails. Tests: `test/unit/g2-precondition.test.ts`, on synthetic fixtures. The wording of the precondition in GATES.md is the coordinator's to add; this block didn't edit GATES.md.
+## cosign and SLSA (m5): run in hosted CI (release-sign.yml), cited for G2
+- **Locally and in `ci.yml`: SKIPPED.** `scripts/ci.sh` prints `SKIPPED: runs in .github/workflows/release-sign.yml (hosted CI, keyless)` for both stages. Keyless signing needs an OIDC workload identity, and there is none on a workstation. Generating a long-lived key would break CLAUDE.md rule 2 (no secrets). The stages still fail if `cosign` or `slsa-verifier` is on `PATH`.
+- **In `.github/workflows/release-sign.yml`:** keyless `cosign sign-blob` and `verify-blob` with a pinned identity and issuer; SLSA generic-generator provenance; `slsa-verifier verify-artifact`. Each step has a negative self-test. Runs only on `workflow_dispatch` and `v*` tags. Full description: docs/CI.md.
+- **G2 precondition** (`tools/g2-precondition.mjs`, 2026-10-06):
+  - `ci.sh` passes `--delegated=cosign,slsa`.
+  - A G2 row that is signed must cite, in that row, a release-sign run as `https://github.com/MrsNqobiG/ArcRail/actions/runs/<run-id>` (digits, no further path). Otherwise CI fails.
+  - A stage passed as plainly skipped (not delegated) still fails a signed G2.
+  - A missing or duplicated G2 row still fails.
+  - `release-sign.yml`'s `g2-evidence` job runs the tool with no skipped stages.
+  - Tests: `test/unit/g2-precondition.test.ts`, 30 tests on synthetic fixtures, including a CLI exit-code test.
+  - Mutants, each in place and then restored byte for byte (`cmp`): citation check removed (18 tests fail), URL lookahead removed (3 fail), citation searched in the whole file instead of the G2 row (1 fails), skipped-stage check removed (8 fail).
+  - The GATES.md wording of the precondition is the coordinator's to update; this block didn't edit GATES.md.
+
+## Hosted CI (GitHub Actions), 2026-10-06
+
+Workflows: `.github/workflows/ci.yml` and `.github/workflows/release-sign.yml`. Each action is pinned by full commit SHA, with the tag in a comment. The one exception is the SLSA reusable workflow, which SLSA requires by tag (below).
+
+**SHA verification.** Each SHA comes from `git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag> 'refs/tags/<tag>^{}'`. None of these tags printed a peeled `^{}` line, so all are lightweight tags pointing straight at a commit. Each was then confirmed to be a commit object with `curl https://api.github.com/repos/<owner>/<repo>/git/commits/<sha>`, which returned the commit and its date.
+
+**Publication-age rule.** Each pin is at least 7 days old on 2026-10-06. Release dates come from the GitHub releases API.
+
+| Action / reusable workflow | Tag | Commit SHA | Released | Used in |
+|---|---|---|---|---|
+| actions/checkout | v7.0.1 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | 2026-07-20 | ci, g2-evidence |
+| actions/setup-node | v7.0.0 | `820762786026740c76f36085b0efc47a31fe5020` | 2026-07-14 | ci, g2-evidence |
+| actions/upload-artifact | v7.0.1 | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | 2026-04-10 | ci (release only), sign, verify-provenance, g2-evidence |
+| actions/download-artifact | v8.0.1 | `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` | 2026-03-11 | sign, verify-provenance, g2-evidence (`digest-mismatch: error` is v8's default) |
+| sigstore/cosign-installer | v4.1.2 | `6f9f17788090df1f26f669e9d70d6ae9567deba6` | 2026-05-07 | sign |
+| slsa-framework/slsa-github-generator `generator_generic_slsa3.yml` | **v2.1.0 (by tag)** | tag resolves to `f7dd8c54c2067bafc12ca7a55595d5ee9b75204a` | 2025-02-24 | provenance |
+
+**Why the SLSA generator is referenced by tag.** The slsa-github-generator README at v2.1.0 ("Referencing SLSA builders and generators") says builders and generators "MUST be referenced by tag in order for the slsa-verifier to be able to verify the ref of the trusted builder/generator's reusable workflow", and as `@vX.Y.Z`. It calls this "contrary to the GitHub best practice… intentional due to limits in GitHub Actions" (slsa-verifier issue #12). slsa-verifier accepts the provenance only from the trusted generator at a release tag. Generator inputs, outputs and job permissions were read from the workflow file at v2.1.0:
+- inputs `base64-subjects`, `provenance-name`, `private-repository`, `upload-assets`;
+- output `provenance-name`;
+- the `generator` job needs `id-token: write`, `contents: read`, `actions: read`;
+- the `upload-assets` job needs `contents: write`.
+
+Its README "Private Repositories" section says `private-repository: true` is the opt-in to publishing a private repo's name to the public Rekor log, and that the generator errors without it.
+
+**Tools fetched by the workflows:**
+
+| Tool | Version | Source | Integrity check | How the reference value was verified |
+|---|---|---|---|---|
+| cosign | v3.0.6 (cosign-installer v4.1.2's default and bootstrap version, set explicitly) | github.com/sigstore/cosign release `cosign-linux-amd64` | The installer checks its hard-coded sha256 `c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74`, and the workflow re-checks the installed binary with `sha256sum -c` | Same value in `https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign_checksums.txt` (line `cosign-linux-amd64`) and in the installer's `action.yml` at `6f9f1778` |
+| slsa-verifier | v2.7.1 (2025-06-27) | `https://github.com/slsa-framework/slsa-verifier/releases/download/v2.7.1/slsa-verifier-linux-amd64` | `sha256sum -c` against `946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339` | Two sources agree: `SHA256SUM.md` on slsa-verifier `main` (commit `30d0be3bbab553fc51557377baba2f7572dfc212`; the copy at the v2.7.1 tag predates the release and lists only ≤ v2.7.0), and the GitHub release asset digest. Downloaded here, `sha256sum -c` OK. `verify-artifact --help` shows the flags used (`--provenance-path`, `--source-uri`, `--source-branch`, `--source-tag`). Success string `PASSED: SLSA verification passed` read from `cli/slsa-verifier/verify.go` at v2.7.1 |
+| Container image | `ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78` (tag `resolute-20260912`, pushed 2026-09-18; the newer `resolute-20260927` is < 7 days old) | Docker Hub `library/ubuntu` | Pinned by index digest | Registry `HEAD …/manifests/resolute-20260912` → `docker-content-digest` above. `sha256sum` of the downloaded index gives the same value. amd64 manifest `sha256:61ebaa5c…b8a6`, layer `sha256:09923199…e9e`. The layer's `dpkg/status` has no python3, git, curl, xz or ca-certificates, which is why the first step installs them |
+| OS packages | Ubuntu snapshot `20260928T000000Z`: python3.14 `3.14.4-1ubuntu0.2`, python3 `3.14.3-0ubuntu2`, git `1:2.53.0-1ubuntu1`, curl `8.18.0-1ubuntu2.7`, xz-utils `5.8.3-1` (the same versions as this workstation) | `https://snapshot.ubuntu.com/ubuntu/20260928T000000Z/` | apt: signed `InRelease` (ubuntu-archive-keyring in the image), then package hashes. python3.14 and python3 pinned with `=`. The step fails unless `/usr/bin/python3` reports 3.14.4 | Resolved offline with `apt-get -s install` against the image's own `dpkg/status` and the snapshot indexes: 50 packages, no errors. `ca-certificates` (needed for HTTPS to the snapshot) comes first from the image's default sources, so its exact version isn't pinned |
+| node | 22.23.3, used by `setup-node` | actions/node-versions manifest | None by us | The pipeline itself runs on the hash-verified `.tools/node`, which `ci.sh` puts first on `PATH`. The setup-node copy only runs `tools/g2-precondition.mjs` in the g2-evidence job |
+
+**Clean-runner bootstrap** (`scripts/install-tools-phase2.sh`, 2026-10-06). On a clean runner `.tools/` doesn't exist (it is git-ignored), so the installer now also installs the Phase 0 tools:
+- **node:** `node-v22.23.3-linux-x64.tar.xz` from nodejs.org, checked against `df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de` (the line in `https://nodejs.org/dist/v22.23.3/SHASUMS256.txt`, re-fetched 2026-10-06) before extraction. This happens only when both the node tree and the `.tools/node` link are absent; a partial install still fails.
+- **gitleaks:** `gitleaks_8.30.1_linux_x64.tar.gz`, checked against `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb` (the line in `gitleaks_8.30.1_checksums.txt`) before extraction.
+- **Every run, as before:** the node tree hash and the gitleaks binary hash are re-verified. `mkdir -p .tools/bin` now runs before the scratch directory is created inside `.tools`.
+- **Tested in a scratch copy** (installer, `verify-venv.py` and the lock only, no `.tools/`): full install in 2 m 43 s. Same node tree hash `1842bae0…b27e`; semgrep venv 66 = 66 = 66, 2,852 entries; a second run re-verified everything.
+- **Fail-closed checks:** removing the `.tools/node` link alone → `FAIL: .tools/node must link to …`; one byte appended to the node tree → `FAIL: node install tree differs`.
+
+**Release artefacts.**
+- **Why not `npm pack`:** `npm pack --dry-run --json --ignore-scripts` lists 225 files and 0 under `dist/`. The package is private and has no `files` list, so npm follows `.gitignore`, which excludes `dist/`.
+- **What is shipped instead:** `tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - dist | gzip -9n`. Built twice here from the same `dist/`, both runs had identical sha256. The base64 subjects round-trip with `base64 -d | cmp`.
+
+**Validation, 2026-10-06** (nothing pushed, nothing run on GitHub):
+- **YAML:** both workflows parse with `python3 -c 'import yaml'` (PyYAML).
+- **actionlint v1.7.12:** clean on both workflows, with shellcheck integrated. The binary is `actionlint_1.7.12_linux_amd64.tar.gz`, sha256 `8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8`, checked with `sha256sum -c` against the release's `actionlint_1.7.12_checksums.txt` (equal to the GitHub asset digest); tag `v1.7.12` = `914e7df21a07ef503a81201c76d2b11c789d3fca`.
+- **shellcheck v0.11.0:** `shellcheck-v0.11.0.linux.x86_64.tar.xz`, sha256 `8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198`. The release publishes no checksum file, so this value is the GitHub release asset digest, and the download matched it. `shellcheck -S warning` is clean on `scripts/ci.sh` and `scripts/install-tools-phase2.sh`.
+- **Syntax:** `bash -n` passes on every modified script.
+- **Not run locally:** the full `scripts/ci.sh` (parallel Phase 3 work in `src/` and `test/`). The hosted jobs themselves (OIDC, Fulcio, Rekor) can only run on GitHub.
 
 ## Fix block 3 (m16, m17)
 - **m16, import closure** (`test/unit/money-path.test.ts`). Non-relative specifiers are now examined. On a listed path, only `viem` (and subpaths) and `node:crypto` may be imported (grow only through a LEDGER entry). Absolute and `file:` specifiers are path edges. `createRequire`, `createRequireFromPath`, `getBuiltinModule`, `import.meta.resolve`, `x.require` and `x._load` are untraceable loaders and fail. Every module in the closure is checked against an LLM/agent SDK denylist (openai, @openai/*, @anthropic-ai/*, langchain*, @langchain/*, @google/generative-ai, @google/genai, @google-cloud/vertexai, cohere-ai, ollama, @mistralai/*, ai, @ai-sdk/*, llamaindex, @llamaindex/*, @modelcontextprotocol/*, groq-sdk, @huggingface/inference, replicate, together-ai, @aws-sdk/client-bedrock*, @azure/openai, @azure-rest/ai-inference, portkey-ai). MC-34 dependency scan: the runtime graph of package.json (dependencies, optional and peer, recursively, resolved through package-lock.json the way Node resolves node_modules; aliases checked by `name` and registry URL; a missing dependency fails) holds no denylisted package. Plants are in-memory overrides of src/policy (nothing is written): C3, C3b, C7, C7b, C8 (absolute path), C8b (`file:` URL), C9–C12 (SDK imports, including type-only and dynamic), C13 (unlisted package), C14; plus 6 crafted lockfiles (direct, nested transitive, hoisted transitive, npm alias, peer, missing).

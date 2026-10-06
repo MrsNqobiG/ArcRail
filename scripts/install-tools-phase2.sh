@@ -6,13 +6,16 @@
 #   the Semgrep venv (tools/verify-venv.py: lock = installed set, every file
 #   against the lock-hashed wheels or a pin or the install-time manifest, no
 #   unlisted file, pyvenv.cfg, semgrep-core) and the semgrep-rules tree.
-# A tool that is missing is installed (node and gitleaks come from Phase 0:
-# missing → FAIL). A tool that is present but differs → FAIL; it is never
-# silently reinstalled, so tampering can't be papered over.
+# A tool that is missing is installed from its pinned, hash-verified source
+# (node and gitleaks too, so a clean hosted-CI runner can bootstrap: only when
+# both the node tree and the .tools/node link are absent). A tool that is
+# present but differs → FAIL; it is never silently reinstalled, so tampering
+# can't be papered over.
 # Provenance and versions: docs/verification/tooling-phase2.md.
 #
-# Network: github.com release assets and codeload (pinned commit), and PyPI
-# for Semgrep's hash-locked wheels. Nothing else. No keys, no signing.
+# Network: nodejs.org (the pinned node archive), github.com release assets and
+# codeload (pinned commit), and PyPI for Semgrep's hash-locked wheels. Nothing
+# else. No keys, no signing.
 #
 #   osv-scanner 2.6.0    SCA (offline DB from scripts/fetch-osv-db.sh)
 #   uv 0.12.19           Python package installer, used only to build the Semgrep venv
@@ -24,9 +27,9 @@ T="$ROOT/.tools"
 # Scratch for downloads and the uv cache: deleted on exit, so third-party test
 # fixtures inside them (fake secrets in rule tests) never sit in the tree that
 # gitleaks scans.
+mkdir -p "$T/bin"
 DL="$(mktemp -d "$T/dl.XXXXXX")"
 trap 'rm -rf "$DL"' EXIT
-mkdir -p "$T/bin"
 
 OSV_VER="v2.6.0"
 OSV_SHA="ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"   # osv-scanner_linux_amd64, from osv-scanner_SHA256SUMS
@@ -39,6 +42,10 @@ RULES_TREE_SHA="906f567684f42fa6c0a5723344897179b0cf2b002c50c895a49124cc076ca3c3
 SEMGREP_VER="1.178.0"
 # Phase 0 tools (docs/verification/tooling.md), re-derived on 2026-10-05 from the
 # official archives (nodejs.org SHASUMS256 df450af8…02de; gitleaks checksums 551f6fc8…70eb):
+NODE_VER="v22.23.3"
+NODE_TXZ_SHA="df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de"     # node-v22.23.3-linux-x64.tar.xz, from nodejs.org SHASUMS256.txt
+GITLEAKS_VER="8.30.1"
+GITLEAKS_TGZ_SHA="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb" # gitleaks_8.30.1_linux_x64.tar.gz, from gitleaks_8.30.1_checksums.txt
 NODE_TREE_SHA="1842bae06071b49add6c3151d09eb7db9406ac57e98d36502fd73e3d99e1b27e" # node-v22.23.3-linux-x64/ tree (tree_sha below)
 GITLEAKS_SHA="88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509"   # gitleaks binary in gitleaks_8.30.1_linux_x64.tar.gz
 
@@ -57,7 +64,22 @@ tree_sha() { # files by content, symlinks by target
   (cd "$1" && { find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; find . -type l -printf 'L %p -> %l\n' | LC_ALL=C sort; } | sha256sum | cut -d' ' -f1)
 }
 
-# Phase 0 tools: verify only.
+# Phase 0 tools. Clean runner (hosted CI): install from the official archive, hash-checked
+# before extraction. Then, always, verify (a partial or altered install fails below).
+if [ ! -e "$T/node-v22.23.3-linux-x64" ] && [ ! -e "$T/node" ] && [ ! -L "$T/node" ]; then
+  fetch "https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.xz" "$DL/node.tar.xz"
+  verify "$DL/node.tar.xz" "$NODE_TXZ_SHA"
+  tar -xJf "$DL/node.tar.xz" -C "$DL"
+  mv "$DL/node-$NODE_VER-linux-x64" "$T/node-v22.23.3-linux-x64"
+  ln -s node-v22.23.3-linux-x64 "$T/node"
+fi
+if [ ! -e "$T/bin/gitleaks" ]; then
+  fetch "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VER/gitleaks_${GITLEAKS_VER}_linux_x64.tar.gz" "$DL/gitleaks.tar.gz"
+  verify "$DL/gitleaks.tar.gz" "$GITLEAKS_TGZ_SHA"
+  mkdir -p "$DL/gitleaks"
+  tar -xzf "$DL/gitleaks.tar.gz" -C "$DL/gitleaks" gitleaks
+  install -m 0755 "$DL/gitleaks/gitleaks" "$T/bin/gitleaks"
+fi
 [ -d "$T/node-v22.23.3-linux-x64" ] || { echo "FAIL: .tools/node-v22.23.3-linux-x64 missing (Phase 0 install, tooling.md)"; exit 1; }
 [ "$(readlink "$T/node")" = "node-v22.23.3-linux-x64" ] || { echo "FAIL: .tools/node must link to node-v22.23.3-linux-x64"; exit 1; }
 [ "$(tree_sha "$T/node-v22.23.3-linux-x64")" = "$NODE_TREE_SHA" ] || { echo "FAIL: node install tree differs from the official archive"; exit 1; }
