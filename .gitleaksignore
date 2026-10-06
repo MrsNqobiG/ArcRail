@@ -36,3 +36,10 @@ docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:ge
 docs/sources/circle/cpn/quickstarts_integrate-with-cpn-ofi.md:generic-api-key:712
 docs/sources/circle/cpn/quickstarts_integrate-with-cpn-ofi.md:generic-api-key:852
 docs/sources/circle/cpn/quickstarts_integrate-with-cpn-ofi.md:generic-api-key:914
+# Kit v4 guard self-test fixtures: deliberately fake Dfns token, webhook secret and VALR secret that the guard must block (not real credentials), 2026-10-06
+be66e35add42a169ff520e0527ecb8a4fcd3ea87:.claude/hooks/test-guard.sh:generic-api-key:38
+be66e35add42a169ff520e0527ecb8a4fcd3ea87:.claude/hooks/test-guard.sh:generic-api-key:39
+be66e35add42a169ff520e0527ecb8a4fcd3ea87:.claude/hooks/test-guard.sh:generic-api-key:43
+.claude/hooks/test-guard.sh:generic-api-key:38
+.claude/hooks/test-guard.sh:generic-api-key:39
+.claude/hooks/test-guard.sh:generic-api-key:43
