@@ -1,0 +1,35 @@
+{
+  "$schema": "../node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "U3-only Stryker config: the repository stryker.config.json with the vitest config narrowed to the U3 tests (test/client.vitest.config.ts) and src/chain/client/index.ts and src/chain/client/viem-transport.ts as the only mutate targets. Run from the repository root.",
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "test/client.vitest.config.ts"
+  },
+  "coverageAnalysis": "perTest",
+  "mutate": [
+    "src/chain/client/index.ts",
+    "src/chain/client/viem-transport.ts"
+  ],
+  "ignorePatterns": [
+    ".tools",
+    ".claude",
+    "dist",
+    "reports",
+    "coverage",
+    "sbom.cdx.json"
+  ],
+  "disableTypeChecks": "src/**/*.ts",
+  "thresholds": {
+    "high": 95,
+    "low": 90,
+    "break": 90
+  },
+  "reporters": [
+    "clear-text"
+  ],
+  "tempDirName": ".stryker-tmp-U3",
+  "cleanTempDir": true,
+  "timeoutMS": 60000,
+  "_timeout_comment": "Static mutants re-run the whole suite, which now includes TypeScript-compiler tests (contract diff, MC-01 lint, MC-02). A 60 s base timeout lets those mutants finish and be killed by an assertion instead of being counted as timeouts."
+}

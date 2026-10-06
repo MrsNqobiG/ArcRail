@@ -9,3 +9,30 @@ docs/sources/arc/integrate_infrastructure_indexing-events.md:generic-api-key:343
 .tools/node-v22.23.3-linux-x64/include/node/v8-internal.h:generic-api-key:130
 # 5. Prose in a Phase 1 verification report (no credential; matched the generic pattern).
 docs/verification/P1-threat-model-lensR.md:generic-api-key:51
+# Public Circle documentation examples archived for CR-1/CO-1 (token contract addresses, sample idempotency keys and IDs; not secrets), 2026-10-06
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/cpn/concepts_transactions_transactions-v2.md:generic-api-key:111
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/stablefx/api-reference_webhook-endpoints.md:generic-api-key:419
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/cpn/quickstarts_integrate-with-cpn-ofi.md:generic-api-key:712
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/cpn/quickstarts_integrate-with-cpn-ofi.md:generic-api-key:852
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/cpn/quickstarts_integrate-with-cpn-ofi.md:generic-api-key:914
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/eurc/cctp_expanded-assets_quickstarts_transfer-eurc-ethereum-to-arc.md:generic-api-key:175
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:117
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:205
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:215
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:266
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:270
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:280
+e5a120d678fd0ff1a3dc1d3616dae3a7cf5f7271:docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:373
+docs/sources/circle/cpn/concepts_transactions_transactions-v2.md:generic-api-key:111
+docs/sources/circle/stablefx/api-reference_webhook-endpoints.md:generic-api-key:419
+docs/sources/circle/eurc/cctp_expanded-assets_quickstarts_transfer-eurc-ethereum-to-arc.md:generic-api-key:175
+docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:117
+docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:205
+docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:215
+docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:266
+docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:270
+docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:280
+docs/sources/circle/stablefx/stablefx_howtos_fund-trade-settlement-advance.md:generic-api-key:373
+docs/sources/circle/cpn/quickstarts_integrate-with-cpn-ofi.md:generic-api-key:712
+docs/sources/circle/cpn/quickstarts_integrate-with-cpn-ofi.md:generic-api-key:852
+docs/sources/circle/cpn/quickstarts_integrate-with-cpn-ofi.md:generic-api-key:914

@@ -1,0 +1,108 @@
+# DFNS documentation
+
+> DFNS documentation
+
+- [Documentation (144 pages)](https://docs.dfns.co/_llms/documentation.md): Documentation for Documentation.
+- [API reference (333 pages)](https://docs.dfns.co/_llms/api-reference.md): Documentation for API reference.
+
+## SDK reference
+
+- [SDKs](https://docs.dfns.co/sdks/index.md): Official DFNS SDKs for backend languages and frontend platforms, including TypeScript, Python, Java, Go, Rust, Swift, Kotlin, Flutter, and React Native.
+
+### Backend SDKs
+
+- [Backend SDKs](https://docs.dfns.co/sdks/backend/index.md): Shared concepts for the server-side DFNS SDKs, including authentication, request signing, error handling, and language-specific guidance.
+
+#### TypeScript
+
+- [TypeScript SDK (server)](https://docs.dfns.co/sdks/backend/typescript/index.md): Server-side SDK for integrating DFNS into Node.js backends, with typed clients, request signing, and helpers for wallets, transfers, and signatures.
+- [TypeScript SDK (server) development](https://docs.dfns.co/sdks/backend/typescript/development.md): Architecture and usage patterns for the server-side DFNS TypeScript SDK, including authentication, signers, wallets, transfers, and Node.js setup.
+- [TypeScript SDK (server) examples](https://docs.dfns.co/sdks/backend/typescript/examples.md): Code examples for the DFNS TypeScript SDK on the server, including authentication, wallet creation, transfers, and request signing in Node.js.
+
+#### Go
+
+- [Go SDK](https://docs.dfns.co/sdks/backend/go/index.md): Server-side SDK for integrating DFNS into Go backends, with typed clients, request signing, and helpers for wallets, transfers, and signatures.
+- [Go SDK development](https://docs.dfns.co/sdks/backend/go/development.md): Architecture and usage patterns for the DFNS Go SDK, including authentication, wallets, transfers, signing, dependencies, and project setup.
+- [Go SDK examples](https://docs.dfns.co/sdks/backend/go/examples.md): Code examples for the DFNS Go SDK, including authentication, creating wallets, transferring assets, and signing requests from a Go backend.
+
+#### Python
+
+- [Python SDK](https://docs.dfns.co/sdks/backend/python/index.md): Server-side SDK for integrating DFNS into Python backends, with typed clients, request signing, and helpers for wallets, transfers, and signatures.
+- [Python SDK development](https://docs.dfns.co/sdks/backend/python/development.md): Architecture and usage patterns for the DFNS Python SDK, including authentication, wallets, transfers, signing, and dependency setup.
+
+#### Java
+
+- [Java SDK](https://docs.dfns.co/sdks/backend/java/index.md): Server-side SDK for integrating DFNS into Java backends, with typed clients, request signing, and helpers for wallets, transfers, and signatures.
+- [Java SDK development](https://docs.dfns.co/sdks/backend/java/development.md): Architecture and usage patterns for the DFNS Java SDK, including authentication, wallets, transfers, signing, and dependency setup.
+
+#### Rust
+
+- [Rust SDK](https://docs.dfns.co/sdks/backend/rust/index.md): Server-side SDK for integrating DFNS into Rust backends, with typed clients, request signing, and helpers for wallets, transfers, and signatures.
+- [Rust SDK development](https://docs.dfns.co/sdks/backend/rust/development.md): Architecture and usage patterns for the DFNS Rust SDK, including client configuration, user action signing, API domains, delegated signing, and error handling.
+
+### Frontend SDKs
+
+- [Frontend SDKs](https://docs.dfns.co/sdks/frontend/index.md): Shared concepts for client-side DFNS SDKs, including passkey signing, authentication flows, and platform-specific guidance for web and mobile.
+- [React Native SDK](https://docs.dfns.co/sdks/frontend/react-native/index.md): Passkey signing SDK for React Native applications, with authentication, request signing, and delegated wallet support for iOS and Android.
+
+#### TypeScript
+
+- [TypeScript SDK (browser)](https://docs.dfns.co/sdks/frontend/typescript/index.md): Client-side DFNS SDK for passkey signing in web applications, with login, registration, request signing, and delegated wallet support.
+- [TypeScript SDK (browser) development](https://docs.dfns.co/sdks/frontend/typescript/development.md): Signers and classes for the browser DFNS TypeScript SDK, including WebAuthn passkey support, login flows, and request signing patterns.
+
+#### Flutter
+
+- [Flutter SDK](https://docs.dfns.co/sdks/frontend/flutter/index.md): Client-side DFNS SDK for Flutter apps, with passkey signing, user authentication, and delegated wallet support for iOS and Android.
+- [Flutter SDK development](https://docs.dfns.co/sdks/frontend/flutter/development.md): Architecture and usage patterns for the DFNS Flutter SDK, including how to authenticate users, sign requests, and integrate with the DFNS API.
+- [Flutter SDK examples](https://docs.dfns.co/sdks/frontend/flutter/examples.md): Code examples for the DFNS Flutter SDK, including passkey registration, login, signing, and delegated wallet flows in mobile apps.
+
+#### Kotlin
+
+- [Kotlin SDK](https://docs.dfns.co/sdks/frontend/kotlin/index.md): Client-side DFNS SDK for Android apps written in Kotlin, with passkey signing, user authentication, login flows, and delegated wallet support.
+- [Kotlin SDK development](https://docs.dfns.co/sdks/frontend/kotlin/development.md): Architecture and usage patterns for the DFNS Kotlin SDK on Android, including authentication, request signing, and delegated wallet flows.
+- [Kotlin SDK examples](https://docs.dfns.co/sdks/frontend/kotlin/examples.md): Code examples for the DFNS Kotlin SDK on Android, including passkey registration, login, signing, and delegated wallet integration.
+
+#### Swift
+
+- [Swift SDK](https://docs.dfns.co/sdks/frontend/swift/index.md): Client-side DFNS SDK for iOS apps written in Swift, with passkey signing, user authentication, login flows, and delegated wallet support.
+- [Swift SDK development](https://docs.dfns.co/sdks/frontend/swift/development.md): Architecture and usage patterns for the DFNS Swift SDK on iOS, including authentication, request signing, and delegated wallet flows.
+- [Swift SDK examples](https://docs.dfns.co/sdks/frontend/swift/examples.md): Code examples for the DFNS Swift SDK on iOS, including passkey registration, login flows, request signing, and delegated wallet integration.
+
+## Change Log
+
+- [Change Log](https://docs.dfns.co/changelog/index.md): Release notes for the DFNS Platform, MPC and HSM signers.
+- [DFNS Platform](https://docs.dfns.co/changelog/platform.md): Release notes for the DFNS Platform: new features, blockchain support, API and dashboard changes, breaking changes, and bug fixes.
+- [MPC signer](https://docs.dfns.co/changelog/mpc-signer.md): Release notes for the DFNS MPC signer: protocol updates, security fixes, and operational improvements.
+- [HSM driver](https://docs.dfns.co/changelog/hsm-driver.md): Release notes for the DFNS HSM driver: vendor support, keystore changes, key pre-generation, and operational tooling.
+
+## OpenAPI Specs
+
+- [openapi](/openapi.yaml)
+- [openapi-1.1006.1](/openapi-versions/openapi-1.1006.1.yaml)
+- [openapi-1.1018.3](/openapi-versions/openapi-1.1018.3.yaml)
+- [openapi-1.819.2](/openapi-versions/openapi-1.819.2.yaml)
+- [openapi-1.830.0](/openapi-versions/openapi-1.830.0.yaml)
+- [openapi-1.841.0](/openapi-versions/openapi-1.841.0.yaml)
+- [openapi-1.856.2](/openapi-versions/openapi-1.856.2.yaml)
+- [openapi-1.866.6](/openapi-versions/openapi-1.866.6.yaml)
+- [openapi-1.885.3](/openapi-versions/openapi-1.885.3.yaml)
+- [openapi-1.891.3](/openapi-versions/openapi-1.891.3.yaml)
+- [openapi-1.910.1](/openapi-versions/openapi-1.910.1.yaml)
+- [openapi-1.941.0](/openapi-versions/openapi-1.941.0.yaml)
+- [openapi-1.952.0](/openapi-versions/openapi-1.952.0.yaml)
+- [openapi-1.968.0](/openapi-versions/openapi-1.968.0.yaml)
+- [openapi-2.0.112](/openapi-versions/openapi-2.0.112.yaml)
+- [openapi-2.0.15](/openapi-versions/openapi-2.0.15.yaml)
+- [openapi-2.0.155](/openapi-versions/openapi-2.0.155.yaml)
+- [openapi-2.0.54](/openapi-versions/openapi-2.0.54.yaml)
+- [openapi-2.0.80](/openapi-versions/openapi-2.0.80.yaml)
+
+> The links below point to documentation indexes. Follow each `/_llms/` index recursively until you reach documentation pages.
+
+## Indexes
+
+- [Documentation (144 pages)](https://docs.dfns.co/_llms/documentation.md): Documentation for Documentation.
+- [API reference (333 pages)](https://docs.dfns.co/_llms/api-reference.md): Documentation for API reference.
+
+
+This documentation is built and hosted on [Mintlify](https://mintlify.com), a developer documentation platform.
