@@ -24,7 +24,9 @@
       "WebFetch(domain:www.resbank.co.za)",
       "WebFetch(domain:www.treasury.gov.za)",
       "WebFetch(domain:inforegulator.org.za)",
-      "WebFetch(domain:www.gov.za)"
+      "WebFetch(domain:www.gov.za)",
+      "WebFetch(domain:docs.dfns.co)",
+      "WebFetch(domain:www.circle.com)"
     ]
   },
   "sandbox": {
@@ -39,7 +41,8 @@
         "registry.npmjs.org",
         "github.com",
         "objects.githubusercontent.com",
-        "codeload.github.com"
+        "codeload.github.com",
+        "docs.dfns.co"
       ]
     }
   },
