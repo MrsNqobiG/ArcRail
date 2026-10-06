@@ -1,0 +1,20 @@
+# Repo-local tool binaries (Arc Foundry etc.); provenance in docs/verification/tooling.md
+.tools/
+
+# Never commit real environment files
+.env
+.env.*
+!.env.example
+
+# Node / Phase 2 build and test outputs
+node_modules/
+dist/
+coverage/
+reports/
+.stryker-tmp/
+sbom.cdx.json
+.stryker-tmp-*/
+
+# Python bytecode caches (never commit compiled files)
+__pycache__/
+*.pyc

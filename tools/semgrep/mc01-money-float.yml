@@ -1,0 +1,156 @@
+# RUBRIC MC-01, Semgrep layer: no floating point on a money path.
+# ci.sh runs this ruleset ONLY on the paths listed in docs/MONEY_PATH.md.
+#
+# This is the syntactic second layer, and it can't see types. The type-aware
+# layer (tools/lint-money-floats.mjs) is authoritative: it catches operators
+# with a non-bigint operand whatever the operand is, plus the `number`-type
+# grep and the allow-list. Here, an operator is flagged when an operand is
+# visibly non-bigint: a number literal without the `n` suffix, a string
+# literal, a unary `+` or a `~`. Both layers run in CI and both must be clean.
+rules:
+  - id: mc01-number-parse
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: Number/parseFloat/parseInt on a money path, however reached. Amounts are bigint brands (CLAUDE.md money invariants)."
+    pattern-either:
+      - pattern: Number
+      - pattern: parseFloat
+      - pattern: parseInt
+      - pattern: $O.Number
+      - pattern: $O.parseFloat
+      - pattern: $O.parseInt
+      - pattern: $O["Number"]
+      - pattern: $O["parseFloat"]
+      - pattern: $O["parseInt"]
+  - id: mc01-math
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: Math on a money path, however reached. Use bigint integer arithmetic with an explicit rounding policy (U1)."
+    pattern-either:
+      - pattern: Math
+      - pattern: $O.Math
+      - pattern: $O["Math"]
+  - id: mc01-global-object
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: dynamic route to the globals (globalThis/global/window/self/Reflect/Function/eval) on a money path."
+    pattern-either:
+      - pattern: globalThis
+      - pattern: global
+      - pattern: window
+      - pattern: self
+      - pattern: Reflect
+      - pattern: Function
+      - pattern: eval
+  - id: mc01-json-parse
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: JSON.parse on a money path (JSON numbers are floats). Decode amounts from decimal strings into bigint (CONTRACT §1.1)."
+    pattern-either:
+      - pattern: JSON.parse
+      - pattern: JSON[$K]
+      - pattern: $O.JSON
+      - pattern: $O["JSON"]
+  - id: mc01-to-fixed
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: toFixed/toPrecision/toExponential on a money path."
+    pattern-either:
+      - pattern: $X.toFixed
+      - pattern: $X.toPrecision
+      - pattern: $X.toExponential
+      - pattern: $X["toFixed"]
+      - pattern: $X["toPrecision"]
+      - pattern: $X["toExponential"]
+  - id: mc01-unary-plus
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: unary + (ToNumber) on a money path. Decode with BigInt(string) instead; +hex loses wei above 2^53."
+    pattern: +$X
+  - id: mc01-bitwise-not
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: ~ (and ~~ truncation) on a money path."
+    pattern: ~$X
+  - id: mc01-literal-operand
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: arithmetic or bitwise operator with a non-bigint literal operand (a number without the `n` suffix, or a string) on a money path."
+    patterns:
+      - pattern-either:
+          - pattern: $A - $N
+          - pattern: $N - $A
+          - pattern: $A * $N
+          - pattern: $N * $A
+          - pattern: $A / $N
+          - pattern: $N / $A
+          - pattern: $A % $N
+          - pattern: $N % $A
+          - pattern: $A ** $N
+          - pattern: $N ** $A
+          - pattern: $A | $N
+          - pattern: $N | $A
+          - pattern: $A & $N
+          - pattern: $N & $A
+          - pattern: $A ^ $N
+          - pattern: $N ^ $A
+          - pattern: $A << $N
+          - pattern: $N << $A
+          - pattern: $A >> $N
+          - pattern: $N >> $A
+          - pattern: $A >>> $N
+          - pattern: $N >>> $A
+          - pattern: $A -= $N
+          - pattern: $A *= $N
+          - pattern: $A /= $N
+          - pattern: $A %= $N
+          - pattern: $A **= $N
+          - pattern: $A |= $N
+          - pattern: $A &= $N
+          - pattern: $A ^= $N
+          - pattern: $A <<= $N
+          - pattern: $A >>= $N
+          - pattern: $A >>>= $N
+      - metavariable-regex:
+          metavariable: $N
+          # number literal without the bigint `n` suffix, or a string literal
+          regex: '^(0[xXoObB][0-9a-fA-F_]+|[0-9][0-9_]*(\.[0-9_]*)?([eE][+-]?[0-9]+)?|\.[0-9]+|"[^"]*"|''[^'']*'')$'
+  - id: mc01-literal-plus
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: + with a number literal without the bigint `n` suffix on a money path."
+    patterns:
+      - pattern-either:
+          - pattern: $A + $N
+          - pattern: $N + $A
+          - pattern: $A += $N
+      - metavariable-regex:
+          metavariable: $N
+          regex: '^(0[xXoObB][0-9a-fA-F_]+|[0-9][0-9_]*(\.[0-9_]*)?([eE][+-]?[0-9]+)?|\.[0-9]+)$'
+  - id: mc01-float-literal
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: numeric literal with a decimal point or exponent on a money path."
+    # Code lines only (not // or * comment lines). A bigint literal ends in `n`
+    # and has no decimal point, so it never matches.
+    pattern-regex: '(?m)^(?![ \t]*(?:\*|//)).*?(?<![\w.$§"''`-])(?:\d[\d_]*\.\d[\d_]*|\.\d[\d_]*|\d[\d_]*[eE][+-]?\d+)(?![\w.])'
+  - id: mc01-json-call
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: .json() (Response/Body) on a money path is JSON.parse: JSON numbers are floats. Decode amounts from decimal strings (CONTRACT §1.1)."
+    pattern-either:
+      - pattern: $X.json
+      - pattern: $X["json"]
+  - id: mc01-constructor
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: "MC-01: .constructor on a money path (it reaches Number and Function without naming them)."
+    pattern-either:
+      - pattern: $X.constructor
+      - pattern: $X["constructor"]
+  - id: mc01-number-assertion
+    languages: [typescript]
+    severity: ERROR
+    message: "MC-01: a `number` type assertion (as / <> / satisfies) on a money path."
+    # Regex (Semgrep can't parse a `<number>x` pattern). Code lines only, not // or * comment lines.
+    pattern-regex: '(?m)^(?![ \t]*(?:\*|//)).*?(?:\bas\s+number\b|<number>|\bsatisfies\s+number\b)'

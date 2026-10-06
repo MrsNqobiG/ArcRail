@@ -1,0 +1,11 @@
+# Known gitleaks false positives (generic-api-key). Exactly these five; any new finding fails CI.
+# Format: <file>:<rule-id>:<line> (gitleaks --no-git fingerprints).
+# 1. Guard self-test fixture: a deliberately fake key the hook must block.
+.claude/hooks/test-guard.sh:generic-api-key:27
+# 2-3. Example strings in archived Arc documentation (docs/sources/arc, SHA-256 in MANIFEST).
+docs/sources/arc/integrate_exchanges_cctp-bridging.md:generic-api-key:238
+docs/sources/arc/integrate_infrastructure_indexing-events.md:generic-api-key:343
+# 4. Vendored Node.js header under .tools (checksum-verified Node distribution).
+.tools/node-v22.23.3-linux-x64/include/node/v8-internal.h:generic-api-key:130
+# 5. Prose in a Phase 1 verification report (no credential; matched the generic pattern).
+docs/verification/P1-threat-model-lensR.md:generic-api-key:51

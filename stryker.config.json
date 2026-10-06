@@ -1,0 +1,55 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Mutation testing on the RUBRIC money-path modules only (MC-08: score >= 90). `mutate` must equal the 'Listed paths' table of docs/MONEY_PATH.md exactly; test/unit/money-path.test.ts fails CI otherwise.",
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "vitest.config.ts"
+  },
+  "coverageAnalysis": "perTest",
+  "mutate": [
+    "src/amounts/index.ts",
+    "src/ingestion/index.ts",
+    "src/inbound/index.ts",
+    "src/signer/index.ts",
+    "src/policy/index.ts",
+    "src/chain/client/index.ts",
+    "src/outbound/index.ts",
+    "src/gas/index.ts",
+    "src/recon/index.ts",
+    "src/cbs/translator.ts",
+    "src/cbs/port.ts",
+    "src/cbs/result.ts",
+    "src/cbs/keys.ts"
+  ],
+  "ignorePatterns": [
+    ".tools",
+    ".claude",
+    "dist",
+    "reports",
+    "coverage",
+    "sbom.cdx.json"
+  ],
+  "disableTypeChecks": "src/**/*.ts",
+  "thresholds": {
+    "high": 95,
+    "low": 90,
+    "break": 90
+  },
+  "reporters": [
+    "clear-text",
+    "progress",
+    "html",
+    "json"
+  ],
+  "htmlReporter": {
+    "fileName": "reports/mutation/mutation.html"
+  },
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation.json"
+  },
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": true,
+  "timeoutMS": 60000,
+  "_timeout_comment": "Static mutants re-run the whole suite, which now includes TypeScript-compiler tests (contract diff, MC-01 lint, MC-02). A 60 s base timeout lets those mutants finish and be killed by an assertion instead of being counted as timeouts."
+}

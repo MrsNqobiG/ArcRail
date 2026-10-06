@@ -1,0 +1,245 @@
+<title>Arc Rail Briefing</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; a status ledger up top, then two money lanes drawn as a settlement slip, then plain-language sections. */
+:root{
+  --bg:#f5f7f6; --paper:#ffffff; --ink:#14201d; --muted:#55645f; --line:#d5ddda;
+  --accent:#0b7a63; --accent-soft:#e2f2ed; --wait:#a8630b; --wait-soft:#fbefdc; --stop:#b3261e; --stop-soft:#f9e3e1;
+  --display:"Archivo","Helvetica Neue",Arial,sans-serif; --body:"IBM Plex Sans","Segoe UI",Roboto,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1614; --paper:#16201d; --ink:#e6eeeb; --muted:#9fb0aa; --line:#2b3834;
+  --accent:#3fc3a2; --accent-soft:#143229; --wait:#e0a252; --wait-soft:#33260f; --stop:#ef7b72; --stop-soft:#3a1916; color-scheme:dark }}
+:root[data-theme="dark"]{
+  --bg:#0f1614; --paper:#16201d; --ink:#e6eeeb; --muted:#9fb0aa; --line:#2b3834;
+  --accent:#3fc3a2; --accent-soft:#143229; --wait:#e0a252; --wait-soft:#33260f; --stop:#ef7b72; --stop-soft:#3a1916; color-scheme:dark }
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:16px/1.6 var(--body);padding-inline:20px;padding-block:32px 64px}
+main{max-width:980px;margin:0 auto;display:grid;gap:44px}
+h1,h2,h3{font-family:var(--display);line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(2rem,5vw,3rem);font-weight:800;letter-spacing:-.01em}
+h2{font-size:1.45rem;font-weight:700}
+h3{font-size:1.02rem;font-weight:700}
+p{margin:0;max-width:68ch}
+.eyebrow{font:500 .78rem/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.15rem;color:var(--ink)}
+.muted{color:var(--muted)}
+header{display:grid;gap:14px}
+section{display:grid;gap:18px}
+.paper{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:22px}
+/* status ledger */
+.ledger{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--paper)}
+.stage{padding:14px 12px;border-right:1px solid var(--line);display:grid;gap:6px;align-content:start;min-width:0}
+.stage:last-child{border-right:0}
+.stage .n{font:500 .72rem var(--mono);color:var(--muted)}
+.stage .t{font:700 .95rem var(--display)}
+.stage .s{font-size:.82rem;color:var(--muted)}
+.pill{justify-self:start;font:500 .72rem var(--mono);padding:3px 8px;border-radius:99px;border:1px solid transparent}
+.done{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+.now{background:var(--accent);color:var(--paper)}
+.wait{background:var(--wait-soft);color:var(--wait);border-color:var(--wait)}
+.off{background:var(--stop-soft);color:var(--stop);border-color:var(--stop)}
+.meter{height:10px;background:var(--line);border-radius:99px;overflow:hidden}
+.meter i{display:block;height:100%;width:18%;background:var(--accent)}
+.meterrow{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font:500 .85rem var(--mono);color:var(--muted)}
+/* lanes */
+.lane{display:grid;gap:10px}
+.steps{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px}
+.step{flex:1 1 140px;min-width:0;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:12px;display:grid;gap:4px}
+.step b{font:700 .9rem var(--display)}
+.step span{font-size:.84rem;color:var(--muted)}
+.step.check{border-color:var(--wait);background:var(--wait-soft)}
+.step.check b{color:var(--wait)}
+.arrow{align-self:center;color:var(--muted);font:500 1rem var(--mono)}
+@media (max-width:640px){.arrow{display:none}.ledger{grid-template-columns:repeat(2,minmax(0,1fr))}.stage{border-bottom:1px solid var(--line)}}
+/* parts */
+.parts{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.part{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:6px;align-content:start}
+.part .role{font:500 .72rem var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+.part p{font-size:.92rem;color:var(--muted)}
+/* safety */
+.nets{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.net{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;padding:14px 0;border-top:1px solid var(--line)}
+.net .k{grid-row:span 2;font:700 1.1rem var(--mono);color:var(--accent);width:2.2ch}
+.net h3{font-size:.98rem}
+.net p{font-size:.9rem;color:var(--muted)}
+/* asks */
+.asks{display:grid;gap:10px}
+.ask{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.ask p{font-size:.94rem}
+.tag{font:500 .72rem var(--mono);padding:3px 8px;border-radius:6px;white-space:nowrap}
+/* facts table */
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.92rem}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:500 .75rem var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+td:first-child{font-weight:600;white-space:nowrap}
+/* copy block */
+.copybar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+button{font:600 .9rem var(--body);background:var(--accent);color:var(--paper);border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
+button:focus-visible{outline:3px solid var(--wait);outline-offset:2px}
+pre{margin:0;overflow-x:auto;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:16px;font:400 .82rem/1.5 var(--mono);white-space:pre}
+footer{font-size:.82rem;color:var(--muted)}
+</style>
+
+<main>
+<header>
+  <div class="eyebrow">Briefing · status 5 October 2026, 16:00 SAST</div>
+  <h1>Arc Rail</h1>
+  <p class="lede">A new way for the bank to send and receive digital dollars (USDC) for merchants and customers on Circle's Arc network, plugged in beside the core banking system rather than replacing any of it.</p>
+</header>
+
+<section>
+  <h2>Where we are</h2>
+  <div class="paper" style="display:grid;gap:12px">
+    <div class="meterrow"><span>Overall build</span><span>about 15–20% done</span></div>
+    <div class="meter" role="img" aria-label="About 18 percent complete"><i></i></div>
+    <p class="muted" style="font-size:.92rem">The design is approved for the test network; its final independent checks are finishing today. Building the software on the test network has just started. Real money stays switched off until eight sign-offs by people outside the build team are in place.</p>
+  </div>
+  <div class="ledger" role="list">
+    <div class="stage" role="listitem"><span class="n">Stage 0</span><span class="t">Discovery</span><span class="pill done">Done</span><span class="s">Arc facts checked against Circle's own documents and the live test network.</span></div>
+    <div class="stage" role="listitem"><span class="n">Stage 1</span><span class="t">Design</span><span class="pill done">Approved (G1)</span><span class="s" style="font-size:.74rem">Formal signature pending</span><span class="s">Contract with the core bank system, threat model, risk register, 8 design decisions.</span></div>
+    <div class="stage" role="listitem"><span class="n">Stage 2</span><span class="t">Skeleton</span><span class="pill now">In progress</span><span class="s">Code structure, automatic checks and security scans.</span></div>
+    <div class="stage" role="listitem"><span class="n">Stage 3</span><span class="t">Build the parts</span><span class="pill wait">Next</span><span class="s">15 components, each tested and independently checked.</span></div>
+    <div class="stage" role="listitem"><span class="n">Stage 4–5</span><span class="t">Test-network demo</span><span class="pill wait">Later</span><span class="s">End-to-end runs on Arc's test network, with an evidence pack.</span></div>
+    <div class="stage" role="listitem"><span class="n">Live</span><span class="t">Real money</span><span class="pill off">Locked</span><span class="s">Needs 8 sign-offs: regulator, legal, security review and more.</span></div>
+  </div>
+</section>
+
+<section>
+  <h2>What Arc is, in plain terms</h2>
+  <p>Arc is a payments network run by Circle, the company behind the USDC digital dollar. Money moves between digital wallets in under a second, fees are small and predictable, and a payment, once confirmed, is final. Every transaction is public, so no customer names or personal details ever go onto the network.</p>
+</section>
+
+<section>
+  <h2>How money moves</h2>
+  <div class="lane">
+    <h3>A customer or merchant receives money</h3>
+    <div class="steps">
+      <div class="step"><b>Money arrives</b><span>USDC lands in the customer's bank-controlled wallet on Arc</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="step"><b>Recorded</b><span>The bank's system notes it as "arrived, not yet available"</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="step check"><b>Checked</b><span>Sender screened against sanctions lists; account in good standing</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="step"><b>Available</b><span>Balance shows in the customer's account</span></div>
+    </div>
+  </div>
+  <div class="lane">
+    <h3>A customer or merchant sends money</h3>
+    <div class="steps">
+      <div class="step"><b>Request</b><span>Funds reserved in the customer's account</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="step check"><b>Checked</b><span>Destination screened; sender details shared as the law requires</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="step check"><b>Approved</b><span>A second person approves with a security key</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="step"><b>Sent</b><span>Signed and sent on Arc</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="step"><b>Settled</b><span>Confirmed final, then the reserve is turned into a payment</span></div>
+    </div>
+  </div>
+  <p class="muted" style="font-size:.92rem">Amber steps are control points. If anything is unclear at any step, the money stops and a person is alerted. Nothing moves on a guess.</p>
+</section>
+
+<section>
+  <h2>The main parts</h2>
+  <div class="parts">
+    <div class="part"><span class="role">Stays as is</span><h3>Core banking system</h3><p>Still the official record of customers, balances, checks and the accounts ledger.</p></div>
+    <div class="part"><span class="role">New</span><h3>Arc connector</h3><p>Watches the network, books payments into the bank system, and runs each payment step by step.</p></div>
+    <div class="part"><span class="role">New</span><h3>Signing vault</h3><p>Holds the keys. Signs only payments a person approved, within set limits, and refuses anything else.</p></div>
+    <div class="part"><span class="role">New</span><h3>Independent watchdog</h3><p>Separately checks that the network, the connector and the bank system agree to the cent. If not, it stops all payments.</p></div>
+    <div class="part"><span class="role">New</span><h3>Own network nodes</h3><p>The bank's own view of Arc, compared against a second source so a faulty feed can't fool us.</p></div>
+    <div class="part"><span class="role">Existing services</span><h3>Compliance checks</h3><p>Sanctions screening and the travel-rule data exchange required by South African law.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Safety nets built into the design</h2>
+  <div class="nets">
+    <div class="net"><span class="k">1</span><h3>Books always balance</h3><p>Every movement is checked so the network, the connector and the bank system agree exactly.</p></div>
+    <div class="net"><span class="k">2</span><h3>Never paid twice</h3><p>Every payment carries a unique reference, so retries can't duplicate it.</p></div>
+    <div class="net"><span class="k">3</span><h3>Stops when unsure</h3><p>Any mismatch pauses outgoing payments and alerts a person. Restarting needs two people.</p></div>
+    <div class="net"><span class="k">4</span><h3>Two-person approval</h3><p>Payments need a second person's approval with a physical security key.</p></div>
+    <div class="net"><span class="k">5</span><h3>Spending limits in the vault</h3><p>Per-payment and daily caps, including fees, are enforced where the keys are.</p></div>
+    <div class="net"><span class="k">6</span><h3>Privacy by default</h3><p>No personal information on the public network or in system logs.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>What we need from leadership</h2>
+  <div class="asks">
+    <div class="ask"><span class="tag wait">Decision</span><p><b>How the bank holds the keys:</b> its own secure hardware, or a regulated custodian.</p></div>
+    <div class="ask"><span class="tag wait">Decision</span><p><b>Strategy:</b> the central bank has signalled caution on US-dollar stablecoins for local payments. Do we stay USD-first, focus on cross-border, or plan for another asset?</p></div>
+    <div class="ask"><span class="tag wait">Decision</span><p><b>Which core banking system</b> and team we integrate with, so the connector can be wired to the real system.</p></div>
+    <div class="ask"><span class="tag off">Before real money</span><p><b>Eight sign-offs:</b> regulator authorisation, a travel-rule test with another provider, an exchange-control legal opinion, an independent security review, a key ceremony and drill, a privacy impact assessment, bank-partner approval, and a staged rollout plan.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Quick facts</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Item</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>Network</td><td>Arc test network only. Real money is switched off in the code.</td></tr>
+      <tr><td>Asset</td><td>USDC, Circle's US-dollar stablecoin</td></tr>
+      <tr><td>Design documents</td><td>Contract, threat model, risk register, 8 design decisions, diagrams, test rules</td></tr>
+      <tr><td>Quality control</td><td>Every piece is checked by an independent reviewer before it is accepted</td></tr>
+      <tr><td>Next milestone</td><td>A test deposit credited end to end on the test network</td></tr>
+      <tr><td>Go-live</td><td>Only after all eight sign-offs</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="copybar"><h2>Copy-paste summary</h2><button id="copy" type="button">Copy summary</button></div>
+  <pre id="summary">ARC RAIL - BRIEFING (5 Oct 2026)
+
+WHAT: A new way for the bank to send and receive USDC (digital US
+dollars) for merchants and customers on Circle's Arc network. It plugs
+in beside the core banking system; nothing existing is replaced.
+
+STATUS: about 15-20% done
+  [Done]        Discovery
+  [Approved]    Design (gate G1; formal signature pending)
+  [In progress] Software skeleton
+  [Next]        Build the 15 components
+  [Later]       End-to-end demo on the test network
+  [Locked]      Real money - needs 8 outside sign-offs
+
+HOW MONEY MOVES
+  Receive: arrives -> recorded -> screened -> available
+  Send:    reserve -> screen + legal data -> 2nd-person approval
+           -> sign -> confirmed final -> settled
+
+SAFETY NETS
+  1. Books always balance (network = connector = bank system)
+  2. Never paid twice (unique reference per payment)
+  3. Stops when unsure; restarting needs two people
+  4. Two-person approval with a security key
+  5. Spending and fee limits enforced in the key vault
+  6. No personal data on the public network or in logs
+
+DECISIONS NEEDED
+  - How the bank holds keys (own hardware or regulated custodian)
+  - USD-first vs cross-border focus, given the central bank's stance
+  - Which core banking system and team we integrate with
+
+BEFORE REAL MONEY (8 sign-offs)
+  Regulator authorisation, travel-rule test with another provider,
+  exchange-control legal opinion, independent security review,
+  key ceremony and drill, privacy impact assessment,
+  bank-partner approval, staged rollout plan.</pre>
+</section>
+
+<footer>Prepared from the project's own records (design documents, ledger and gates file). Test network only; real money remains switched off.</footer>
+</main>
+
+<script>
+document.getElementById('copy').addEventListener('click', function () {
+  var btn = this, text = document.getElementById('summary').textContent;
+  function done(msg){ btn.textContent = msg; setTimeout(function(){ btn.textContent = 'Copy summary'; }, 2000); }
+  function selectIt(){ var r = document.createRange(); r.selectNodeContents(document.getElementById('summary')); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); done('Selected - press Ctrl+C'); }
+  try { navigator.clipboard.writeText(text).then(function(){ done('Copied'); }, selectIt); } catch (e) { selectIt(); }
+});
+</script>

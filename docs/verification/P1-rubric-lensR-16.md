@@ -1,0 +1,198 @@
+VERIFICATION · lens: R · target: P1-rubric (docs/RUBRIC.md v2 after v2 fix block 12, the Phase-1 close-out fix block, round 1; sha256 62698867c785aaee277b6bb0b2653c41a4e1514a018c9b6bec6ef86d8737e008, mtime 2026-10-05 14:58 +0200, unchanged from pass start 15:19:44 to pass end 15:39:49 +0200) · commit: none (`git log` → "your current branch 'main' does not have any commits yet"; uncommitted working tree)
+
+Criteria: .claude/agents/verifier.md; docs/RUBRIC.md; docs/LEDGER.md; docs/adr/ADR-001-custody-signing.md; docs/adr/ADR-008-independent-monitor.md; docs/CONTRACT.md §1.3, §3, §6.1; docs/THREAT_MODEL.md T-E2, T-E5; docs/OPEN_QUESTIONS.md Q-C17; docs/constants.md; docs/sources/MANIFEST.md and the archives; tools/source_drift.py; docs/verification/P1-rubric-lensR-15.md, P1-rubric-lensA-1.md, and the 11 reports behind register rows 48–70.
+
+Exit rule applied (operator, LEDGER 2026-10-05): a unit freezes when a pass finds zero BLOCKING defects; minor defects go to the G1 packet. Blocking = money can be lost, misposted or moved without the required control, or a fail-closed path is missing. Minor = everything else.
+
+Session notes:
+- The guard hook was not loaded, so I applied its rules myself.
+  - The only RPC calls were **read-only calls to Arc testnet** `https://rpc.testnet.arc.io`: `eth_chainId` first (→ `0x4cef52` = 5042002), then `eth_blockNumber`, `eth_getLogs`, `eth_call` and `eth_getBlockByNumber`.
+  - I used no mainnet endpoint and no signing or sending method, and read no .env or key files.
+- Other network access: the HTTPS GETs `tools/source_drift.py` makes for the MANIFEST URLs.
+- I wrote no file except this report.
+  - I ran the drift tool without `--out`. I read its source in full: without `--out` it writes nothing and only prints the summary (:40-41, :128-131).
+  - URL lists were diffed with process substitution.
+- **Sibling hashes pinned at pass start (15:19:44 +0200):**
+  - CONTRACT d48f622c…; G1_PACKET ebfaa55f…; GATES 8a7cc182…; LEDGER aaf57367…; OPEN_QUESTIONS 01528f20…; RISK_REGISTER 48930790…; RUBRIC 62698867…; SEQUENCES d3f68f8b…; THREAT_MODEL 4971e7c4…; constants e494e772…;
+  - ADR-001 ee09a22e…; ADR-002 fe254a6e…; ADR-003 58b98363…; ADR-004 176c0a38…; ADR-005 08cdf2fb…; ADR-006 8614d5fe…; ADR-007 05c75efb…; ADR-008 164d5277…;
+  - cbs-port-requirements 0090b9b4…; MANIFEST 1b8e9d32….
+- **Re-read at pass end (15:39:49 +0200):** every pin is unchanged except three files, all touched at 15:37:10.
+  - **GATES** → 6f8be479…. G1 now reads "NOT SIGNED. **Approved by the operator in chat on 2026-10-05 ("g1 is ago" …)** … formal sign-off awaits the operator's own signed commit (RUBRIC MC-42)".
+  - **LEDGER** → d8fe3330…. It adds a matching "G1 approved in chat" decision row. The P1-rubric row (:42) and the rubric proposal queue are unchanged: still 5 rows, the same as at the start.
+  - New file **docs/STATUS.md** (6aff9f5d…).
+  - None of these three changes alters a rubric check. The G1 row still says NOT SIGNED and defers to MC-42, so it agrees with MC-42 and MC-20.
+
+CHECKS
+- K1 Counts, recounted by grep → PASS.
+  - 38 MC rows: MC-01…08, 10…25, 30…34, 40…48. That is R15's 37 plus the new MC-25.
+  - 6 JL rows.
+  - Tags: 18 (both) and 20 (code). R15 had 19 (code); MC-25 adds 1.
+  - 70 register rows, numbered 1…70 with no gaps.
+  - "Adopted (12)" appears 22 times. Rows 48–70 are 23 rows, less row 58, which is not adopted. Row 53 is adopted in part.
+  - "Not adopted": rows 31 and 58. "Partly adopted": row 53. These match :263.
+  - 263 lines in all.
+  - Every MC table, the JL table and the register (:180-251) are contiguous `|` rows, with no blank-line splits.
+- K2 Fix block 12, money-path item 4 (:21), against ADR-001 → PASS.
+  - Item 4 now reads "every ADR-001 signer duty (1 approval and assertion check, 2 shape allow-list, 3 limits and fee ceilings with the chain-ID pin, 4 consumed-approval replay record, 5 monitor-attestation protocol, 6 internal-move rule), its signed-configuration load and its signing-log writer".
+  - The numbers and names match ADR-001 :12-23, which has items 1–6 plus "Signed configuration" and "Signing log".
+  - The list growth is LEDGER-recorded (LEDGER "Money-path list growth … 2026-10-05, RUBRIC v2 fix block 12 widened item 4"), as :29 requires.
+  - The MONEY_PATH.md recount now maps "every named part of every item (for example each ADR-001 duty in item 4)" (:29).
+  - Lens A-1 D1 is closed.
+- K3 Fix block 12, new MC-25 (:67), by re-trace against ADR-001 and the ADR-008 protocol → PASS on what MC-25 states. Gaps are under D1–D3.
+  - (a) Attestation: compared with ADR-008 :99 "rejects any attestation with an equal or lower sequence … A `PAUSE` overrides any unexpired `ALL_CLEAR`. A missing, stale (`A_attest` …) or `PAUSE` attestation → the signer refuses" and ADR-001 :22. All five refusal cases and the one signing case are present. `A_attest` resolves to Q-C17 (OPEN_QUESTIONS :56 "Proposed in ADR-008 for the monitor: `A_attest` 60 s").
+  - (b) Limits on the total debit match ADR-001 :19 "every cap bounds that total": per-tx cap, the two fee ceilings, daily cap (including a zero-value cancel and a replacement's fee), and per-move and daily move caps (item 6).
+  - Boundary step: "cap + 1 wei" is reachable on the total, because fees are set per wei.
+    - Worked example for the fee ceiling: gasLimit × maxFeePerGas = C and C + 1 are both reachable when the test fixes C = 21,000·X with X ≡ 1 (mod 21,001) and X ≥ 2·10¹⁰ (above the floor). Then C + 1 = 21,001 · ((21,000·X + 1)/21,001).
+    - So "+1 wei" is not a Probe F false fail.
+  - (c) An unsigned configuration, or one off the pin, → refuse. This matches ADR-001 :24 "An unsigned or unexpected version → the signer refuses to sign".
+  - (d) "To or value differs from the approval → refused", "at the threshold → signed without an assertion" and "strictly above without one → refused" match ADR-001 :14 and :23 ("at or below … strictly above").
+- K4 Register rows 48–70, re-sourced by reading each cited report:line → PASS.
+  - All 23 sources resolve to the proposal the row states:
+    - contract-9 :57/:58;
+    - threat-model-9 :75/:76;
+    - contract-10 :58/:59;
+    - threat-model-10 :90/:91;
+    - adrs-10 :202/:204/:209;
+    - adrs-11 :229/:233;
+    - adrs-12 :326/:331;
+    - threat-model-11 :139/:142;
+    - adr-008-6 :101/:103;
+    - contract-11 :111/:112;
+    - adrs-13 :167/:171.
+  - I checked the neighbouring lines (contract-11 :108-113, adrs-10 :198-212, adrs-13 :163-173, adrs-11 :225-235, adrs-12 :322-333). No proposal in those 11 reports is missing.
+  - Each "Landed in" target holds the adopted text. For example:
+    - MC-11(vii) has "records that effect's outcome with evidence, or re-drives it under the same key";
+    - MC-44 has "never reused with a different meaning in another document" and the forward-reference clause;
+    - MC-45 has the walletRole, total-debit, trusted-artefact and coverage-by-content clauses.
+  - Row 61 departs from its source's "cap + k" and uses "1 wei on the total debit". The row states the reason.
+  - Row 52's example keys (`refs.address`, `refs.instructionId`, `refs.subjectRef`) all exist in CONTRACT §3 `postJournal` `refs` (:200). The source named `refs.caseId` as one example. The rule covers "every lookup key", so leaving one example out is not a narrowing.
+- K5 Queue rule (:164) against LEDGER → PASS.
+  - "Fix block 12 processed every proposal queued before it (the 11 LEDGER queue rows, register rows 48–70)" matches LEDGER :44-45: "Emptied by RUBRIC v2 fix block 12 (register rows 48–70: all 11 rows …)".
+  - The 5 rows queued since then are, under :164, not defects of this version: adr-008-7, adrs-14, threat-model-12, contract-12 and risk-register-10. See D4 for the freeze interaction.
+- K6 MC-21, by its own shared method, run by me → PASS.
+  - Tool sha256 is 5504b5e7…80e1, the version R13 to A-1 reviewed. I also re-read it in full: its only network call is `urlopen`, and its only write is `--out`.
+  - I ran it at 2026-10-05 ≈13:20 UTC: "integrity failures 0; drifted URLs 0; fetch errors 0; URLs checked 33".
+  - `comm -23` of every docs.arc.io and developers.circle.com URL cited in docs/*.md, docs/adr and docs/discovery against the MANIFEST URLs → empty.
+  - Quotes the rubric relies on, checked in the newest archive the tool compared:
+    - rpc-endpoints :64 "| **Chain ID (Testnet)** | `5042002` |";
+    - :105-108 "`eth_getLogs` returns error `-32012` when the requested block range exceeds 10,000 blocks … ≤9,999-block chunks.";
+    - :43-44 "`-32014`";
+    - gas-and-fees :38 "| **Minimum base fee (testnet)** | 20 Gwei |";
+    - evm-differences.REFETCH-later :203 "**The minimum base fee is 20 Gwei.**" and :83 "Don't use the 6-decimal value when crediting or recording";
+    - usdc-system-events :35 (`0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE`, 18), :36 (`0x3600…0000`, 6) and :39 "emits **two** logs";
+    - opt-in-privacy :29 "not yet available on Arc".
+  - No src/ or infra/ exists yet, so the literal grep is N/A.
+- K7 Arc behaviours the rubric names, re-observed live on testnet (read-only, head 65,632,587) → PASS.
+  - MC-16 / C-40: `eth_getLogs` over 10,000 blocks → `{"code":-32012,"message":"requested range too large"}`; over 9,999 → `[]`.
+  - MC-11(iii) / C-57: `eth_call` from `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` → `{"code":-32603,"message":"Blocked address"}`. The control call from `0x…dEaD` → `"0x"`.
+  - MC-22 / C-30 / C-33: block `0x3e97951` has `baseFeePerGas` `0x4a817c800` = 20,000,000,000 wei and `extraData` `0x00000004a817c800`.
+  - C-41 was not re-provoked and stays UNVERIFIED (Q-A4).
+- K8 MC-03 against CONTRACT §6.1 (:549-571), recomputed with Python bigint `divmod` → PASS.
+  - All 9 rows at p = 6 match, including 0, 1, k − 1, k and the i64 boundary (9,223,372,036,854,775,807, 999,999,999,999).
+  - All 4 rows at p = 2 match.
+  - 1,234,567,890,123,456,789 wei → (1,234,567, 890,123,456,789).
+  - 21,000 × 20 gwei = 420,000,000,000,000. 167,599 × 44 gwei = 7,374,356,000,000,000.
+  - uint256 max → remainder 913,129,639,935, with m > i64 max.
+  - Capacity: 2⁶³/10⁶ ≈ 9.22×10¹² and 2⁶³/10¹⁸ ≈ 9.22.
+  - Probe G arithmetic (:112): 1,000 minor × 10¹² = 10¹⁵ wei.
+- K9 MC-10 against CONTRACT §1.3 (:66-80) → PASS.
+  - K.recv(5042002, 0xab×32, "0", attempt "0") = arc1-970ee4c76bbeae19300510816cb88b62eb947aefe9baa8fac99ac454f3b0785b, 69 characters. This is the same value as R11 to A-1.
+  - These pairs gave distinct keys: `Ab` vs `ab`; `["a|b","reserve"]` vs `["a","b|reserve"]`; attempt "0" vs "1".
+- K10 MC-44 on references fix block 12 introduced → PASS.
+  - Each reference below resolves to text that says what the rubric claims:
+    - ADR-001 items 1–6;
+    - ADR-008 attestation protocol (:89-105);
+    - Q-C17;
+    - "Rubric Lens A-1 D1" (A-1 DEFECTS D1);
+    - "ADR R12 Probe G" (adrs-12 :326);
+    - "MC-40(f) silent-executor rule" (:81 "Enforcement fails closed when the executor goes silent");
+    - LEDGER money-path growth entry.
+- K11 MC-07 Probe F routing → PASS.
+  - G1_PACKET §4 still carries "RUBRIC Probe F (MC-07) … needs explicit acknowledgement".
+  - LEDGER's new G1 row lists "the MC-07 rewording" as still to be acknowledged.
+- K12 Probe G re-run on MC-25 and MC-23 → **YES, partly.** The bad builds below pass. → D1, D2.
+- K13 Probe F re-run → no new false fail.
+  - The boundary steps are reachable (K3).
+  - A good signer with no merchant destination list fails MC-23 only under its literal "`to` on the allow-list" reading. That reading is covered under D2, not as a separate false fail.
+- K14 Regression on frozen units: none is frozen (LEDGER). Substitutes, as far as possible from the :21/:67/:164/:180-253 edits: MC-03 (K8) and MC-10 (K9) → PASS.
+- K15 JL-1…JL-6 (:98-105) → [inspection-only] PASS. Unchanged one-line anchors.
+- K16 ADR-specific rules (:91-95) → [inspection-only] PASS. Unchanged.
+
+CANDIDATES (recorded for traceability)
+- C1 · MC-25's test method doesn't require hostile values from the orchestrator.
+  - Evidence:
+    - RUBRIC :67 "Negative and boundary tests per clause, run against the signer alone, with a stub orchestrator that requests every signature, so each refusal comes from the signer and not from the orchestrator".
+    - ADR-001 :19 "Caps and the threshold are **never taken from the orchestrator** or from the signing request".
+    - ADR-001 :13 "The signer never takes a destination list from the orchestrator".
+    - `grep -i "own copy|never taken|reports the hash"` in RUBRIC → no test clause.
+  - **REAL → D1.**
+    - Suppose a signer reads the move threshold, a cap or Treasury's list from the request, or from any orchestrator call.
+    - Against an honest stub that supplies the true values, it passes every MC-25(b)/(d) boundary test and MC-25(c).
+    - Under a compromised adapter, the same build signs above-threshold moves with no assertion, or uncapped sends. That removes the damage bound residual 4 and RB-7 rely on.
+- C2 · MC-23's `to` rule and MC-25's delegation of ADR-001 item 2 to MC-23.
+  - Evidence:
+    - RUBRIC :65 "only EIP-1559 type-2 transactions, chain ID **5042002 only**, `to` on the allow-list, **`data` empty**".
+    - RUBRIC :67 "(MC-23 tests the shape allow-list …)".
+    - ADR-001 :13-16 binds `to` per class: payout or case return → the approval's destination; move → the signer's own copy of Treasury's list; same-nonce cancel → "zero value, and `to` **equals the sending wallet** … on Treasury's list, or … a collection address the signer derives itself". ADR-001 :14 also says the per-merchant allow-list "is not a signer duty".
+  - **REAL → D2.**
+    - MC-25(d) covers the payout and case-return binding and the move threshold. No item names negative tests for the cancel class: a "cancel" with value > 0, with `to` ≠ sender, or from a sender neither on Treasury's list nor self-derived.
+    - No item names a test for a move whose `to` is off the signer's own list.
+    - MC-23 matches its cited source (THREAT_MODEL T-E5 :149 "allow-listed `to`"), so MC-44 passes. The gap is that MC-25 delegates to MC-23 a duty that MC-23's wording doesn't encode.
+- C3 · The loaded-version hash report is untested.
+  - Evidence:
+    - ADR-001 :24 "The signer **reports the hash of each loaded version to the owners**, so each owner can re-attest it daily (the signer's input to T-T6's [X] check)".
+    - MC-25(c) tests only refusal of unsigned or off-pin configurations.
+  - **REAL → D3.**
+    - A signer that never reports hashes passes everything.
+    - T-T6's [X] owner re-attestation then has no input. That re-attestation is the check for a configuration that is signed but wrong.
+- C4 · The rubric's freeze condition vs the operator's exit rule.
+  - Evidence:
+    - RUBRIC :164 "**The rubric can be frozen only with an empty queue.** … The rubric freezes only when that queue is empty."
+    - LEDGER queue: 5 rows.
+    - LEDGER operator row 2026-10-05: "Phase 1 exit = zero blocking, then freeze, with remaining minor defects carried to the G1 packet (this supersedes 'Keep full discipline')".
+  - **REAL → D4.** Under its own text the rubric can't freeze on a zero-blocking pass, which contradicts the exit rule now in force.
+- C5 · MC-25(a) has no clause for ADR-008 option D (the pre-sign co-attestation token).
+  - **DISMISSED.** ADR-008 :114-115 chooses B for testnet and pilot, and only says "Consider **D**". A clause for an unchosen option would be speculative. If D is chosen, it is a list growth.
+- C6 · An adapter that relays attestations instead of the direct channel (ADR-008 :98) is not tested.
+  - **DISMISSED.**
+    - A relayed attestation still has to verify against the monitor key (MC-25(a)).
+    - An adapter that drops a `PAUSE` gains at most `A_attest`, because the last `ALL_CLEAR` expires. That stays inside ADR-008's stated ~120 s window, so the fail-closed path still exists.
+- C7 · Row 48's source proposal targeted "MC-11(vii)/MC-10", but it landed only in MC-11(vii).
+  - **DISMISSED.** MC-10 already covers "every path that re-issues any keyed operation … uses a fresh key input … or relies on a stated CBS guarantee". The proposal's new content (record the outcome or re-drive under the same key; re-entry with the effect undetermined) is MC-11 semantics.
+
+DEFECTS
+- D1 · docs/RUBRIC.md :67 (MC-25 "How to reconstruct") · Lens R / MC-25 vs ADR-001 items 2, 3 and 6 ("never taken from the orchestrator"), Probe G · **minor**.
+  - Problem: the MC-25 tests don't require the stub orchestrator to supply **hostile** caps, fee ceilings, the move threshold, Treasury's list or destination lists through the request or any orchestrator channel. They also don't require the signer to use its signed-configuration copies regardless. A signer that sources these values from the orchestrator passes MC-25(b)–(d).
+  - Why minor: this is a (code)-phase test-specification gap, not a design path where money moves. ADR-001 and MC-45 (design side, "names its configuration source and human owner, outside the threat's compromise domain") already require the own-copy design. Lens A-1 classified its analogous signer-test gap as minor.
+  - Overlap: it is related to the queued proposal adrs-lensR-14 :143, which covers the design-side source of every compared value. Both can be processed in one fix block.
+  - Fix hint: add to MC-25 "… with a stub orchestrator that requests every signature **and supplies adversarial values for every list, cap, ceiling and threshold it could pass; the signer's decisions must follow its signed-configuration copies only**".
+- D2 · docs/RUBRIC.md :65 (MC-23 "`to` on the allow-list") and :67 (MC-25 "MC-23 tests the shape allow-list") · Lens R / MC-25 coverage claim vs ADR-001 item 2 · **minor**.
+  - Problem: MC-23's single "allow-list" doesn't encode ADR-001's per-class `to` binding. No item names negative tests for:
+    - the same-nonce cancel rule (value > 0; `to` ≠ sending wallet; a sender neither on Treasury's list nor self-derived);
+    - a move to an address off the signer's own copy of Treasury's list.
+  - Read literally, MC-23 also implies a signer-side merchant list, which ADR-001 :14 says is not a signer duty.
+  - Why minor: test-specification wording. ADR-001 states the rule. MC-23's "negative tests for each refused shape" can be read to include it, and a non-matching outflow is still caught by the monitor's DR-01 join → PAUSE.
+  - Fix hint:
+    - MC-23 `to` clause → "`to` bound per class as in ADR-001 item 2";
+    - add to MC-25(d) "a cancel with non-zero value, with `to` ≠ the sending wallet, or from a sender neither on Treasury's list nor self-derived → refused; a move to an address off the signer's own copy of Treasury's list → refused; a collection-wallet self-cancel → signed".
+- D3 · docs/RUBRIC.md :67 (MC-25(c)) · Lens R / MC-25 vs ADR-001 "Signed configuration" (:24), THREAT_MODEL T-T6 [X] input · **minor**.
+  - Problem: the signer's report of each loaded configuration hash to its owners is untested. Without it, the owners' daily re-attestation, which catches a signed-but-wrong configuration, has no input.
+  - Why minor: the report adds evidence; it is not the fail-closed load check, which (c) tests.
+  - Fix hint: add to (c) "and the signer reports the hash of each loaded version to its owners (test: the reported hash equals the loaded artefact's hash)".
+- D4 · docs/RUBRIC.md :164 (queue rule: "can be frozen only with an empty queue") · Lens R / consistency with the governing exit rule (LEDGER operator decision 2026-10-05) · **minor**.
+  - Problem: the rubric's own text forbids freezing while 5 proposals are queued. The exit rule in force freezes a unit at zero blocking defects and carries minors to G1.
+  - Why minor: a process inconsistency. No money path is affected.
+  - Fix hint: amend :164 so that under the 2026-10-05 exit rule, unprocessed queue rows are carried to the G1 packet with the minor defects. Alternatively, process the 5 queued rows in the next rubric fix block.
+
+VERDICT: NEGATIVE (4 defects: 0 blocking, 4 minor)
+
+Notes for the operator:
+- **Zero blocking defects.** Under the exit rule now in force, P1-rubric freezes, and D1–D4 go to the G1 packet as minor defects.
+  - D4 records that the rubric's own text says otherwise; the operator's rule governs.
+  - The 5 queued proposals should go to the G1 packet alongside D1–D4.
+- Fix block 12 closed Lens A-1 D1: item 4 widened, the MONEY_PATH recount, MC-25. It also processed all 23 proposals it claims. Every source line was re-read.
+- No regression: conversions, keys, Arc constants (archive and live testnet) and source integrity (drift tool 0/0/0 over 33 URLs) all reconstruct.
+- During the pass, GATES and LEDGER recorded a G1 approval "in chat" with status still NOT SIGNED pending the operator's signed commit (MC-42). That is consistent with MC-42/MC-20 and is not a rubric matter.
+- The MC-07 Probe F rewording still needs human acknowledgement at G1.
+
+Phase 1 · P1-rubric: 0 blocking → freeze under the 2026-10-05 exit rule (pending main-agent record) · minor defects carried to G1: D1–D4 plus 5 queued proposals · regen budget left 1
