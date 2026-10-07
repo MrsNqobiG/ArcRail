@@ -160,7 +160,8 @@ function isRealDay(instant: string): boolean {
   const month = BigInt(instant.slice(5, 7));
   const day = BigInt(instant.slice(8, 10));
   const leap = (year % 4n === 0n && year % 100n !== 0n) || year % 400n === 0n;
-  const limit = (DAYS_IN_MONTH.get(month) as bigint) + (month === 2n && leap ? 1n : 0n);
+  const base = DAYS_IN_MONTH.get(month) as bigint;
+  const limit = month === 2n && leap ? base + 1n : base;
   return day <= limit;
 }
 

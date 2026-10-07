@@ -30,8 +30,8 @@
  * yet hold the money for some payment methods, which is why ARRIVED is the
  * only user-visible claim and Nova words it accordingly); `cpn.payment.failed`
  * is FAILED; `cpn.refund.completed` is RETURNED; `cpn.refund.failed` is REFUND_FAILED (a report for Ops, never ignored); the other payment events are
- * PENDING (progress, no state change). Anything else, authentic or not, is
- * IGNORED. `completed` and `failed` are cross-checked against the object's
+ * PENDING (progress, no state change). RFI events needing action become `RFI_OPEN` reports (payment named through an injected extractor, as for refunds); an enumerated list of
+ * known no-op types is IGNORED; any other authentic type is UNKNOWN_EVENT (the caller quarantines and pages). `completed` and `failed` are cross-checked against the object's
  * own `status` and refused if they disagree. The Refund object's field that
  * names its payment is NOT in the archive, so it is an injected extractor and
  * refund events fail closed (MALFORMED) without one.
@@ -48,7 +48,22 @@ export interface CpnStubOptions extends PartnerCoreOptions {
   readonly verifySignature: (rawBody: Uint8Array, headers: Readonly<Record<string, string>>) => boolean;
   /** Reads the payment id out of a Refund `notification` object; null when absent. Field unknown until the agreement. */
   readonly refundPaymentId?: (notification: JsonObject) => string | null;
+  /** Reads the payment id out of an RFI `notification` object; null when absent. Field unknown until the agreement (not in the archive). */
+  readonly rfiPaymentId?: (notification: JsonObject) => string | null;
 }
+
+/** Authentic, ENUMERATED events that carry no payout state and need no action (webhook-events.md). Anything else is UNKNOWN_EVENT. */
+const KNOWN_IGNORED: readonly string[] = [
+  'cpn.rfi.inReview',
+  'cpn.rfi.approved',
+  'cpn.transaction.broadcasted',
+  'cpn.transaction.completed',
+  'cpn.transaction.failed',
+  'cpn.refund.created',
+];
+
+/** RFI events that need Ops: the BFI asks for information, or rejected the answer (webhook-events.md "RFI events"). */
+const RFI_ACTION: readonly string[] = ['cpn.rfi.informationRequired', 'cpn.rfi.rejected'];
 
 const TOKEN = /^[\x21-\x7e]{1,128}$/;
 
@@ -76,7 +91,7 @@ export class CpnStubPartner extends PartnerCore {
   verifyCallback(rawBody: Uint8Array, headers: Readonly<Record<string, string>>): PortResult<PartnerCallback, CallbackRejectCode> {
     let authentic: boolean;
     try {
-      authentic = this.#o.verifySignature(rawBody, headers);
+      authentic = this.#o.verifySignature(rawBody, headers) === true;
     } catch {
       authentic = false;
     }
@@ -95,7 +110,13 @@ export class CpnStubPartner extends PartnerCore {
       if (type === 'cpn.payment.completed') return this.#payment(eventId, n, 'PAID', 'COMPLETED', null);
       if (type === 'cpn.payment.failed') return this.#payment(eventId, n, 'FAILED', 'FAILED', type);
       if (PROGRESS.includes(type)) return this.#payment(eventId, n, 'PENDING', null, null);
-      return rejected('IGNORED', 'not a payout-state event');
+      if (RFI_ACTION.includes(type)) {
+        const id = this.#o.rfiPaymentId?.(n) ?? null;
+        if (id === null || !TOKEN.test(id)) return rejected('MALFORMED', 'rfi names no payment');
+        return ok({ eventId, payoutId: id, state: 'PENDING', reason: type, notice: 'RFI' }, false);
+      }
+      if (KNOWN_IGNORED.includes(type)) return rejected('IGNORED', 'known event without payout state');
+      return rejected('UNKNOWN_EVENT', 'authentic but unrecognised event type: quarantine and page');
     } catch {
       return rejected('MALFORMED', 'callback fields missing or invalid');
     }

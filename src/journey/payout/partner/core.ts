@@ -20,9 +20,10 @@
 import { randomUUID } from 'node:crypto';
 import { asObject, parseJson } from '../../../dfns/json.js';
 import type { JsonObject } from '../../../dfns/json.js';
-import { ok, rejected } from '../../../nova-ports/ids.js';
+import { normaliseHex32, ok, rejected } from '../../../nova-ports/ids.js';
 import type { Hex32, IdempotencyKey, NetworkId, PortResult } from '../../../nova-ports/ids.js';
 import { canonicalRequest } from './port.js';
+import type { SettlementNetworkPin } from '../../quote/compose.js';
 import type {
   CallbackRejectCode,
   CreatePayoutRejectCode,
@@ -47,10 +48,10 @@ export interface PartnerCoreOptions {
    */
   readonly isFunded: (funding: { readonly network: NetworkId; readonly txHash: Hex32 }, binding: FundingBinding) => boolean;
   /**
-   * The settlement network's chain ID. The testnet demo gate is honoured only when this is 5042002 (C-01);
-   * left out, the demo gate is never honoured.
+   * The settlement network adapter's own pin (as JQUOTE takes it, never a config value). The testnet demo gate is
+   * honoured only when the pin's chain ID is 5042002 (C-01); left out, the demo gate is never honoured.
    */
-  readonly settlementChainId?: bigint;
+  readonly settlementNetwork?: SettlementNetworkPin;
   /** Payout id source; defaults to a random UUID. Injectable for tests. */
   readonly newId?: () => string;
 }
@@ -85,7 +86,9 @@ export abstract class PartnerCore implements PayoutPartner {
     key: IdempotencyKey,
     req: PartnerPayoutRequest,
   ): Promise<PortResult<{ readonly payoutId: string }, CreatePayoutRejectCode>> {
-    const canonical = canonicalRequest(req);
+    // Funding identity: lower-cased hash, so one transaction cannot license two payouts by spelling (MC-10).
+    const txHash = normaliseHex32(req.funding.txHash);
+    const canonical = canonicalRequest(txHash === null ? req : { ...req, funding: { network: req.funding.network, txHash } });
     const prior = this.#created.get(key);
     if (prior !== undefined) {
       return prior.canonical === canonical ? ok({ payoutId: prior.payoutId }, true) : rejected('KEY_CONFLICT', 'key reused with another request');
@@ -100,22 +103,25 @@ export abstract class PartnerCore implements PayoutPartner {
     if (meta.currency !== req.currency) return rejected('CURRENCY_MISMATCH', 'payout currency differs from the recipient account');
     const g = this.#o.gate;
     const crossBorder = meta.country !== g.homeCountry || meta.currency !== g.homeCurrency;
-    const demo = g.testnetDemo && this.#o.settlementChainId === ARC_TESTNET_CHAIN_ID;
+    const demo = g.testnetDemo && this.#o.settlementNetwork?.chainId === ARC_TESTNET_CHAIN_ID;
     if (crossBorder && !g.legalOpinionRecorded && !demo) {
       return rejected('CROSS_BORDER_DISABLED', 'cross-border payouts are off until a legal opinion is recorded');
     }
-    const fundingId = `${req.funding.network}:${req.funding.txHash}`;
+    if (txHash === null) return rejected('FUNDING_INVALID', 'funding transaction hash is malformed');
+    const funding = { network: req.funding.network, txHash };
+    const fundingId = JSON.stringify([funding.network, funding.txHash]);
     if (this.#consumed.has(fundingId)) return rejected('FUNDING_ALREADY_USED', 'funding transfer already licenses another payout');
     let funded: boolean;
     try {
-      funded = this.#o.isFunded(req.funding, { key, recipientRef: req.recipientRef, currency: req.currency, amount: req.amount }) === true;
+      funded = this.#o.isFunded(funding, { key, recipientRef: req.recipientRef, currency: req.currency, amount: req.amount }) === true;
     } catch {
       funded = false;
     }
     if (!funded) return rejected('NOT_FUNDED', 'funding transfer not confirmed by our indexer');
-    this.#consumed.set(fundingId, key);
+    // Consume only after the payout is registered: a throwing or repeating newId must not strand the funding.
     const payoutId = this.formatId((this.#o.newId ?? randomUUID)());
     this.#tracker.register(payoutId);
+    this.#consumed.set(fundingId, key);
     this.#created.set(key, { canonical, payoutId });
     return ok({ payoutId }, false);
   }

@@ -25,6 +25,7 @@ const TX_BAD = ('0x' + 'ee'.repeat(32)) as Hex32;
 const owner = novaOwnerRef('owner-1');
 const k1 = idempotencyKey('k:1');
 const k2 = idempotencyKey('k:2');
+const k3 = idempotencyKey('k:3');
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const leaks = (text: string): string[] => PII_STRINGS.filter((p) => text.includes(p));
 
@@ -45,7 +46,8 @@ interface Opts {
   recipients: (ref: string) => { country: string; currency: ReturnType<typeof fiatCode> };
   gate: CrossBorderGate;
   isFunded: (f: { network: NetworkId; txHash: Hex32 }, b: FundingBinding) => boolean;
-  settlementChainId?: bigint;
+  newId?: () => string;
+  settlementNetwork?: { network: NetworkId; chainId: bigint };
 }
 interface Harness {
   readonly name: string;
@@ -122,7 +124,7 @@ describe.each([stub, fake])('PayoutPartner contract: $name', (h) => {
     const built = h.make({
       recipients: (r) => store.meta(r),
       gate: { homeCountry: 'ZA', homeCurrency: 'ZAR', legalOpinionRecorded: false, testnetDemo: false, ...over.gate },
-      settlementChainId: over.chainId ?? 5042002n,
+      settlementNetwork: { network: NETWORK, chainId: over.chainId ?? 5042002n },
       isFunded: (f, b) => funded && f.txHash !== TX_BAD && b.amount <= (over.maxAmount ?? 12_345n),
     });
     const req: PartnerPayoutRequest = { recipientRef: ref, currency: fiatCode(over.currency ?? 'ZAR'), amount: cbsMinor(12_345n), funding: { network: NETWORK, txHash: TX } };
@@ -226,6 +228,47 @@ describe.each([stub, fake])('PayoutPartner contract: $name', (h) => {
       expect(await s.partner.createPayout(k1, s.req)).toMatchObject({ kind: 'OK', replayed: true });
       const other = { ...s.req, funding: { network: NETWORK, txHash: TX2 } };
       expect((await s.partner.createPayout(k2, other)).kind).toBe('OK');
+    });
+
+    it('one transaction hash is one funding whatever its spelling (MC-10); a malformed hash is refused', async () => {
+      const s = await setup();
+      expect((await s.partner.createPayout(k1, s.req)).kind).toBe('OK');
+      const spell = (txHash: string): PartnerPayoutRequest => ({ ...s.req, funding: { network: NETWORK, txHash: txHash as Hex32 } });
+      const upper = '0x' + 'AB'.repeat(32);
+      const mixed = '0x' + 'aB'.repeat(32);
+      expect(await s.partner.createPayout(k2, spell(upper))).toMatchObject({ kind: 'REJECTED', code: 'FUNDING_ALREADY_USED' });
+      expect(await s.partner.createPayout(k3, spell(mixed))).toMatchObject({ kind: 'REJECTED', code: 'FUNDING_ALREADY_USED' });
+      // the first key replays with any spelling of its own hash, and still gets the same payout
+      const first = await s.partner.createPayout(k1, s.req);
+      expect(await s.partner.createPayout(k1, spell(upper))).toEqual(first);
+      for (const bad of ['not-a-hash', '0x' + 'ab'.repeat(31), '0x' + 'zz'.repeat(32), '']) {
+        expect(await s.partner.createPayout(k3, spell(bad))).toMatchObject({ kind: 'REJECTED', code: 'FUNDING_INVALID' });
+      }
+      // a malformed hash never reaches the funding check
+      const seen: string[] = [];
+      const t = h.make({ recipients: (r) => s.store.meta(r), gate: { homeCountry: 'ZA', homeCurrency: 'ZAR', legalOpinionRecorded: false, testnetDemo: false }, isFunded: (f) => (seen.push(f.txHash), true) });
+      await t.partner.createPayout(k1, spell(upper));
+      expect(seen).toEqual([TX]);
+    });
+
+    it('a throwing or repeating newId does not consume the funding', async () => {
+      let n = 0;
+      const s = await setup();
+      const t = h.make({
+        recipients: (r) => s.store.meta(r),
+        gate: { homeCountry: 'ZA', homeCurrency: 'ZAR', legalOpinionRecorded: false, testnetDemo: false },
+        isFunded: () => true,
+        newId: () => {
+          n += 1;
+          if (n === 1) throw new Error('no id');
+          return n <= 3 ? 'dup' : 'fresh';
+        },
+      });
+      const second = { ...s.req, funding: { network: NETWORK, txHash: TX2 } };
+      await expect(t.partner.createPayout(k1, s.req)).rejects.toThrow('no id');
+      expect((await t.partner.createPayout(k2, s.req)).kind).toBe('OK'); // the funding was not stranded by the throw
+      await expect(t.partner.createPayout(k3, second)).rejects.toThrow('payout already registered');
+      expect((await t.partner.createPayout(k3, second)).kind).toBe('OK'); // nor by the repeated id
     });
 
     it('a refused funding check does not consume the funding, and a throwing check fails closed', async () => {

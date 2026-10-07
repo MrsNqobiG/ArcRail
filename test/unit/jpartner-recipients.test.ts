@@ -7,14 +7,19 @@ import {
   RecipientError,
   Secret,
   isScreenedWallet,
+  TRAVEL_RULE_NOT_APPLICABLE_TESTNET,
   screenWalletRecipient,
 } from '../../src/journey/recipients/index.js';
-import type { AddressScreeningPort, KeyManagement, ScreeningAnswer, TravelRuleAnswer } from '../../src/journey/recipients/index.js';
+import type { AddressScreeningPort, KeyManagement, ScreeningAnswer, TravelRuleAnswer, TravelRuleContext, TravelRuleHook } from '../../src/journey/recipients/index.js';
 import { fiatCode, novaOwnerRef } from '../../src/nova-ports/ids.js';
+import type { UsdcUnits } from '../../src/amounts/index.js';
 import type { NetworkAddress } from '../../src/nova-ports/ids.js';
 import { AesKms, Clock, PII, PII_STRINGS, bankDetails, makeStore } from './jpartner-support.js';
 
 const owner = novaOwnerRef('owner-1');
+const XFER: TravelRuleContext = { amount: 12_345n as UsdcUnits, originator: owner };
+type ScreenDeps = Omit<Parameters<typeof screenWalletRecipient>[1], 'travelRule'> & { readonly travelRule?: TravelRuleHook };
+const screen = (a: string, d: ScreenDeps) => screenWalletRecipient(a, { travelRule: TRAVEL_RULE_NOT_APPLICABLE_TESTNET, ...d }, XFER);
 const leaks = (text: string): string[] => PII_STRINGS.filter((p) => text.includes(p));
 
 describe('BankRecipient: encryption and the opaque ref', () => {
@@ -50,7 +55,7 @@ describe('BankRecipient: encryption and the opaque ref', () => {
   it('reveal decrypts the same details, bound to the ref', async () => {
     const { store } = makeStore();
     const ref = await store.create(owner, bankDetails());
-    const s = await store.reveal(ref);
+    const s = await store.reveal(ref, 'PAYOUT');
     expect(s.use((d) => d)).toEqual(bankDetails());
     expect(s.use((d) => d.accountNumber)).toBe('62837465192');
   });
@@ -134,7 +139,7 @@ describe('BankRecipient: PII never appears in logs, JSON or errors', () => {
   it('redacts every rendering of a revealed secret and of the store', async () => {
     const { store } = makeStore();
     const ref = await store.create(owner, bankDetails());
-    const secret = await store.reveal(ref);
+    const secret = await store.reveal(ref, 'PAYOUT');
     const renderings = [
       JSON.stringify(secret),
       JSON.stringify({ nested: secret }),
@@ -162,11 +167,11 @@ describe('BankRecipient: PII never appears in logs, JSON or errors', () => {
     try {
       const { store, clock } = makeStore(10n, new Clock(0n));
       const ref = await store.create(owner, bankDetails());
-      await store.reveal(ref);
+      await store.reveal(ref, 'PAYOUT');
       store.meta(ref);
       clock.t = 50n;
       store.purgeExpired();
-      await store.reveal(ref).catch(() => undefined);
+      await store.reveal(ref, 'PAYOUT').catch(() => undefined);
       const seen = [...spies.flatMap((s) => s.mock.calls), ...out.mock.calls, ...errw.mock.calls].map((c) => c.map(String).join(' ')).join('\n');
       expect(leaks(seen)).toEqual([]);
     } finally {
@@ -190,7 +195,7 @@ describe('BankRecipient: PII never appears in logs, JSON or errors', () => {
     const good = new AesKms();
     const { store: s2 } = makeStore(1000n, new Clock(1n), { encrypt: (p, c) => good.encrypt(p, c), decrypt: leaky.decrypt });
     const ref = await s2.create(owner, bankDetails());
-    const e2 = await s2.reveal(ref).catch((e: unknown) => e);
+    const e2 = await s2.reveal(ref, 'PAYOUT').catch((e: unknown) => e);
     expect(e2).toMatchObject({ code: 'KEY_MANAGEMENT_FAILED' });
     expect(leaks(String(e2) + inspect(e2, { depth: 9 }))).toEqual([]);
   });
@@ -219,7 +224,7 @@ describe('BankRecipient: PII never appears in logs, JSON or errors', () => {
       const kms: KeyManagement = { encrypt: async () => Uint8Array.from([1]), decrypt: async () => bytes };
       const { store } = makeStore(1000n, new Clock(1n), kms);
       const ref = await store.create(owner, bankDetails());
-      const e = await store.reveal(ref).catch((x: unknown) => x);
+      const e = await store.reveal(ref, 'PAYOUT').catch((x: unknown) => x);
       expect(e).toMatchObject({ code: 'CORRUPT_RECORD' });
       expect(leaks(String(e) + inspect(e, { depth: 9 }))).toEqual([]);
     }
@@ -232,7 +237,7 @@ describe('BankRecipient: PII never appears in logs, JSON or errors', () => {
       const kms: KeyManagement = { encrypt: async () => Uint8Array.from([1]), decrypt: async () => new TextEncoder().encode(JSON.stringify(rest)) };
       const { store } = makeStore(1000n, new Clock(1n), kms);
       const ref = await store.create(owner, bankDetails());
-      await expect(store.reveal(ref)).rejects.toMatchObject({ code: 'CORRUPT_RECORD' });
+      await expect(store.reveal(ref, 'PAYOUT')).rejects.toMatchObject({ code: 'CORRUPT_RECORD' });
     }
   });
 
@@ -244,12 +249,43 @@ describe('BankRecipient: PII never appears in logs, JSON or errors', () => {
   });
 });
 
+describe('BankRecipient: access record and immutable meta', () => {
+  it('reveal needs a valid purpose and leaves a PII-free access record', async () => {
+    const { store, clock } = makeStore(10_000n, new Clock(7n));
+    const ref = await store.create(owner, bankDetails());
+    expect(store.accessLog()).toEqual([]);
+    await store.reveal(ref, 'COMPLIANCE_REVIEW');
+    clock.t = 9n;
+    await store.reveal(ref, 'PAYOUT');
+    expect(store.accessLog()).toEqual([
+      { ref, purpose: 'COMPLIANCE_REVIEW', at: 7n },
+      { ref, purpose: 'PAYOUT', at: 9n },
+    ]);
+    expect(leaks(JSON.stringify(store.accessLog(), (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v)))).toEqual([]);
+    (store.accessLog() as unknown[]).length = 0; // a copy
+    expect(store.accessLog().length).toBe(2);
+    await expect(store.reveal(ref, 'MARKETING' as 'PAYOUT')).rejects.toMatchObject({ code: 'INVALID_PURPOSE' });
+    expect(store.accessLog().length).toBe(2);
+    // a reveal of a missing ref leaves no record
+    await expect(store.reveal('rcp-' + 'a'.repeat(32), 'PAYOUT')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(store.accessLog().length).toBe(2);
+  });
+  it('meta is frozen: retention and routing facts cannot be changed through it', async () => {
+    const { store } = makeStore(10_000n, new Clock(1n));
+    const ref = await store.create(owner, bankDetails());
+    const m = store.meta(ref);
+    expect(Object.isFrozen(m)).toBe(true);
+    expect(() => { (m as { expiresAt: bigint }).expiresAt = 10n ** 18n; }).toThrow(TypeError);
+    expect(store.meta(ref).expiresAt).toBe(10_001n);
+  });
+});
+
 describe('BankRecipient: refs and retention', () => {
   it('rejects malformed refs and unknown refs', async () => {
     const { store } = makeStore();
     for (const bad of ['', 'x', 'rcp-', 'rcp-' + 'g'.repeat(32), 'rcp-' + 'A'.repeat(32), 'rcp-' + 'a'.repeat(31), 'rcp-' + 'a'.repeat(33), ' rcp-' + 'a'.repeat(32), 'rcp-' + 'a'.repeat(32) + '\n']) {
       expect(() => store.meta(bad)).toThrow(expect.objectContaining({ code: 'INVALID_REF' }));
-      await expect(store.reveal(bad)).rejects.toMatchObject({ code: 'INVALID_REF' });
+      await expect(store.reveal(bad, 'PAYOUT')).rejects.toMatchObject({ code: 'INVALID_REF' });
     }
     expect(() => store.meta('rcp-' + 'a'.repeat(32))).toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
   });
@@ -259,12 +295,12 @@ describe('BankRecipient: refs and retention', () => {
     const ref = await store.create(owner, bankDetails());
     clock.t = 1099n;
     expect(store.meta(ref).expiresAt).toBe(1100n);
-    await expect(store.reveal(ref)).resolves.toBeInstanceOf(Secret);
+    await expect(store.reveal(ref, 'PAYOUT')).resolves.toBeInstanceOf(Secret);
     clock.t = 1100n;
     expect(() => store.meta(ref)).toThrow(expect.objectContaining({ code: 'RETENTION_EXPIRED' }));
     clock.t = 1099n; // even if the clock went back, the row is gone
     expect(() => store.meta(ref)).toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
-    await expect(store.reveal(ref)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(store.reveal(ref, 'PAYOUT')).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
   it('retention is counted from creation with the stated period', async () => {
@@ -331,12 +367,12 @@ const fakes: [string, (a: ScreeningAnswer | 'THROW') => AddressScreeningPort & {
 
 describe.each(fakes)('WalletRecipient screening contract: %s', (_n, make) => {
   it('a throwing local blocklist fails closed with a typed rejection', async () => {
-    const r = await screenWalletRecipient(ADDR, { screening: make('CLEAR'), localBlocklist: () => { throw new Error('stale'); } });
+    const r = await screen(ADDR, { screening: make('CLEAR'), localBlocklist: () => { throw new Error('stale'); } });
     expect(r).toEqual({ kind: 'REJECTED', code: 'SCREENING_UNAVAILABLE' });
   });
   it('CLEAR gives a normalised screened recipient', async () => {
     const s = make('CLEAR');
-    const r = await screenWalletRecipient(ADDR, { screening: s, localBlocklist: () => false });
+    const r = await screen(ADDR, { screening: s, localBlocklist: () => false });
     expect(r).toMatchObject({ kind: 'OK', recipient: { kind: 'WALLET', address: ADDR_LC } });
     expect(r.kind === 'OK' && isScreenedWallet(r.recipient)).toBe(true);
     expect(r.kind === 'OK' && Object.isFrozen(r.recipient)).toBe(true);
@@ -346,15 +382,15 @@ describe.each(fakes)('WalletRecipient screening contract: %s', (_n, make) => {
     expect(s.calls).toEqual([ADDR_LC]);
   });
   it('BLOCKED, UNAVAILABLE, a throw and an unknown answer all fail closed', async () => {
-    expect(await screenWalletRecipient(ADDR, { screening: make('BLOCKED'), localBlocklist: () => false })).toEqual({ kind: 'REJECTED', code: 'SCREENING_BLOCKED' });
-    expect(await screenWalletRecipient(ADDR, { screening: make('UNAVAILABLE'), localBlocklist: () => false })).toEqual({ kind: 'REJECTED', code: 'SCREENING_UNAVAILABLE' });
-    expect(await screenWalletRecipient(ADDR, { screening: make('THROW'), localBlocklist: () => false })).toEqual({ kind: 'REJECTED', code: 'SCREENING_UNAVAILABLE' });
-    expect(await screenWalletRecipient(ADDR, { screening: make('MAYBE' as ScreeningAnswer), localBlocklist: () => false })).toEqual({ kind: 'REJECTED', code: 'SCREENING_UNAVAILABLE' });
+    expect(await screen(ADDR, { screening: make('BLOCKED'), localBlocklist: () => false })).toEqual({ kind: 'REJECTED', code: 'SCREENING_BLOCKED' });
+    expect(await screen(ADDR, { screening: make('UNAVAILABLE'), localBlocklist: () => false })).toEqual({ kind: 'REJECTED', code: 'SCREENING_UNAVAILABLE' });
+    expect(await screen(ADDR, { screening: make('THROW'), localBlocklist: () => false })).toEqual({ kind: 'REJECTED', code: 'SCREENING_UNAVAILABLE' });
+    expect(await screen(ADDR, { screening: make('MAYBE' as ScreeningAnswer), localBlocklist: () => false })).toEqual({ kind: 'REJECTED', code: 'SCREENING_UNAVAILABLE' });
   });
   it('the local USDC blocklist is checked first, on the normalised address, and the screening port is not even asked', async () => {
     const s = make('CLEAR');
     const asked: string[] = [];
-    const r = await screenWalletRecipient(ADDR, { screening: s, localBlocklist: (a) => (asked.push(a), true) });
+    const r = await screen(ADDR, { screening: s, localBlocklist: (a) => (asked.push(a), true) });
     expect(r).toEqual({ kind: 'REJECTED', code: 'BLOCKLISTED' });
     expect(asked).toEqual([ADDR_LC]);
     expect(s.calls).toEqual([]);
@@ -363,7 +399,7 @@ describe.each(fakes)('WalletRecipient screening contract: %s', (_n, make) => {
     const s = make('CLEAR');
     const bl = vi.fn(() => false);
     for (const bad of ['', '0x123', ADDR + '00', ADDR.slice(2), '0x' + 'g'.repeat(40)]) {
-      expect(await screenWalletRecipient(bad, { screening: s, localBlocklist: bl })).toEqual({ kind: 'REJECTED', code: 'ADDRESS_INVALID' });
+      expect(await screen(bad, { screening: s, localBlocklist: bl })).toEqual({ kind: 'REJECTED', code: 'ADDRESS_INVALID' });
     }
     expect(bl).not.toHaveBeenCalled();
     expect(s.calls).toEqual([]);
@@ -372,18 +408,18 @@ describe.each(fakes)('WalletRecipient screening contract: %s', (_n, make) => {
     const answers: [TravelRuleAnswer, boolean][] = [['NOT_REQUIRED', true], ['READY', true], ['HOLD', false], ['???' as TravelRuleAnswer, false]];
     for (const [answer, passes] of answers) {
       const check = vi.fn(async () => answer);
-      const r = await screenWalletRecipient(ADDR, { screening: make('CLEAR'), localBlocklist: () => false, travelRule: { check } });
-      expect(check).toHaveBeenCalledWith(ADDR_LC);
+      const r = await screen(ADDR, { screening: make('CLEAR'), localBlocklist: () => false, travelRule: { check } });
+      expect(check).toHaveBeenCalledWith(ADDR_LC, XFER);
       expect(r.kind).toBe(passes ? 'OK' : 'REJECTED');
       if (!passes) expect(r).toEqual({ kind: 'REJECTED', code: 'TRAVEL_RULE_HOLD' });
     }
     const thrower = { check: () => Promise.reject(new Error('x')) };
-    expect(await screenWalletRecipient(ADDR, { screening: make('CLEAR'), localBlocklist: () => false, travelRule: thrower })).toEqual({ kind: 'REJECTED', code: 'TRAVEL_RULE_HOLD' });
+    expect(await screen(ADDR, { screening: make('CLEAR'), localBlocklist: () => false, travelRule: thrower })).toEqual({ kind: 'REJECTED', code: 'TRAVEL_RULE_HOLD' });
   });
   it('the travel-rule hook is not consulted when screening already failed', async () => {
     const check = vi.fn(async () => 'READY' as TravelRuleAnswer);
-    await screenWalletRecipient(ADDR, { screening: make('BLOCKED'), localBlocklist: () => false, travelRule: { check } });
-    await screenWalletRecipient(ADDR, { screening: make('UNAVAILABLE'), localBlocklist: () => false, travelRule: { check } });
+    await screen(ADDR, { screening: make('BLOCKED'), localBlocklist: () => false, travelRule: { check } });
+    await screen(ADDR, { screening: make('UNAVAILABLE'), localBlocklist: () => false, travelRule: { check } });
     expect(check).not.toHaveBeenCalled();
   });
 });

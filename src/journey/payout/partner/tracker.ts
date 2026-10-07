@@ -21,6 +21,7 @@ export type PayoutReportKind =
   | 'REFUND_RECEIVED' //   RETURNED after FAILED: the refund came back; Nova may release only with the matching INBOUND log on the open F-17 case (design section nine, P2R and P6), never on the partner's word alone
   | 'REFUND_FAILED' //     the partner failed to return the money: Ops must chase it
   | 'CLAIM' //             RETURNED after PAID: delivered, then returned; open a claim with Ops
+  | 'RFI_OPEN' //          the partner needs information from us before the payment can proceed: Ops must answer
   | 'CONFLICT'; //         PAID and FAILED for one payout: Ops must decide
 
 export interface PayoutReport {
@@ -40,9 +41,9 @@ export interface CallbackOutcome {
 }
 
 const RANK: Readonly<Record<PartnerPayoutState, bigint>> = { PENDING: 0n, PAID: 1n, FAILED: 1n, RETURNED: 2n, REFUND_FAILED: 2n };
-/** Same shape as the §10.3 `payoutDedupeKey`, widened to RETURNED (a state the shared PayoutState does not have). */
+/** Tuple-encoded (ids may contain ':'), so two different tuples can never join to one key (MC-10). */
 function dedupeKey(payoutId: string, state: PartnerPayoutState): string {
-  return `payout:${payoutId}:${state}`;
+  return JSON.stringify(['payout', payoutId, state]);
 }
 const REASON_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
@@ -56,8 +57,6 @@ export class PayoutTracker {
   readonly #seen = new Set<string>();
   readonly #seenEvents = new Set<string>();
   readonly #quarantined = new Set<string>();
-  /** The first final state (PAID or FAILED) applied per payout: a later contradiction is a conflict even after RETURNED. */
-  readonly #final = new Map<string, PartnerPayoutState>();
   #reports: readonly PayoutReport[] = [];
 
   /** A payout the adapter created. Registering twice is a programming error. */
@@ -80,31 +79,33 @@ export class PayoutTracker {
     return [...this.#reports];
   }
 
-  /** A PAID or FAILED that contradicts the final state already applied (reachable only after RETURNED or REFUND_FAILED). */
-  #contradicts(cb: PartnerCallback): boolean {
-    const f = this.#final.get(cb.payoutId);
-    return RANK[cb.state] === 1n && f !== cb.state;
-  }
-
   /** The callback MUST already be authentic (`PayoutPartner.verifyCallback`). */
   apply(cb: PartnerCallback): PortResult<CallbackOutcome, CallbackApplyRejectCode> {
     const current = this.#state.get(cb.payoutId);
     if (current === undefined) return rejected('UNKNOWN_PAYOUT', 'no such payout');
     if (this.#quarantined.has(cb.payoutId)) return rejected('CONFLICT', 'payout is quarantined for Ops');
     const key = dedupeKey(cb.payoutId, cb.state);
-    const eventKey = `${cb.payoutId}:${cb.eventId}`;
+    const eventKey = JSON.stringify([cb.payoutId, cb.eventId]);
+    if (cb.notice === 'RFI') {
+      if (this.#seenEvents.has(eventKey)) return ok({ payoutId: cb.payoutId, state: current, applied: false, report: null }, true);
+      this.#seenEvents.add(eventKey);
+      const rfi: PayoutReport = { payoutId: cb.payoutId, kind: 'RFI_OPEN', reason: safeReason(cb.reason) };
+      this.#reports = [...this.#reports, rfi];
+      return ok({ payoutId: cb.payoutId, state: current, applied: true, report: rfi }, false);
+    }
     // The partner's own notification id: a redelivery is a no-op whatever the body says.
     if (this.#seenEvents.has(eventKey) || this.#seen.has(key)) return ok({ payoutId: cb.payoutId, state: current, applied: false, report: null }, true);
 
     const from = RANK[current];
     const to = RANK[cb.state];
-    if ((to < from || cb.state === current) && !this.#contradicts(cb)) {
+    if (cb.state === current || to === 0n) {
+      // A repeat of the current state, or a late PENDING: stale.
       this.#seen.add(key);
       this.#seenEvents.add(eventKey);
       return ok({ payoutId: cb.payoutId, state: current, applied: false, report: null }, false);
     }
     if (to <= from) {
-      // PAID versus FAILED (also after RETURNED), or RETURNED versus REFUND_FAILED: never pick one silently.
+      // PAID versus FAILED (also after RETURNED, whose callback then ranks below), or RETURNED versus REFUND_FAILED: never pick one silently.
       this.#quarantined.add(cb.payoutId);
       this.#reports = [...this.#reports, { payoutId: cb.payoutId, kind: 'CONFLICT', reason: safeReason(cb.reason) }];
       return rejected('CONFLICT', 'partner reported a conflicting final state');
@@ -114,7 +115,6 @@ export class PayoutTracker {
     this.#seen.add(key);
     this.#seenEvents.add(eventKey);
     this.#state.set(cb.payoutId, cb.state);
-    if (to === 1n) this.#final.set(cb.payoutId, cb.state);
     const report = reportFor(cb, current);
     if (report !== null) this.#reports = [...this.#reports, report];
     return ok({ payoutId: cb.payoutId, state: cb.state, applied: true, report }, false);

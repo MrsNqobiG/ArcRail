@@ -2,7 +2,7 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { cbsMinor } from '../../src/amounts/index.js';
-import { JsonObject } from '../../src/dfns/json.js';
+import { JsonObject, optString } from '../../src/dfns/json.js';
 import { decodeBodyObject, headerValue } from '../../src/journey/payout/partner/core.js';
 import { CpnStubPartner } from '../../src/journey/payout/partner/cpn-stub.js';
 import { FAKE_SIGNATURE_HEADER, FakePartner, fakePartnerSign } from '../../src/journey/payout/partner/fake.js';
@@ -154,9 +154,23 @@ describe('CpnStubPartner mapping (event types from references_webhooks_webhook-e
     const noExtractor = new CpnStubPartner({ ...base, verifySignature: () => true });
     expect(noExtractor.verifyCallback(env('cpn.refund.failed', { paymentId: 'pay-1' }), {})).toMatchObject({ code: 'MALFORMED' });
   });
-  it('RFI, transaction, other refund events and unknown types are ignored, not applied', () => {
-    for (const t of ['cpn.rfi.informationRequired', 'cpn.rfi.rejected', 'cpn.transaction.completed', 'cpn.refund.created', 'cpn.payment.other', '', 'CPN.PAYMENT.COMPLETED']) {
+  it('the enumerated known no-op events are IGNORED, and nothing else is', () => {
+    for (const t of ['cpn.rfi.inReview', 'cpn.rfi.approved', 'cpn.transaction.broadcasted', 'cpn.transaction.completed', 'cpn.transaction.failed', 'cpn.refund.created']) {
       expect(v(env(t, { id: 'p', status: 'COMPLETED' }))).toMatchObject({ kind: 'REJECTED', code: 'IGNORED' });
+    }
+  });
+  it('an authentic event of an unrecognised type is UNKNOWN_EVENT (quarantine and page), never the benign IGNORED', () => {
+    for (const t of ['cpn.payment.other', '', 'CPN.PAYMENT.COMPLETED', 'cpn.payment.completed ', 'cpn.rfi.other', 'x']) {
+      expect(v(env(t, { id: 'p', status: 'COMPLETED' }))).toMatchObject({ kind: 'REJECTED', code: 'UNKNOWN_EVENT' });
+    }
+  });
+  it('RFI events needing action become RFI_OPEN reports, naming the payment through the injected extractor only', () => {
+    const q = new CpnStubPartner({ ...base, verifySignature: () => true, rfiPaymentId: (n) => optString(n, 'paymentRef') });
+    for (const t of ['cpn.rfi.informationRequired', 'cpn.rfi.rejected']) {
+      expect(q.verifyCallback(env(t, { paymentRef: 'pay-1' }), {})).toMatchObject({ kind: 'OK', value: { payoutId: 'pay-1', state: 'PENDING', reason: t, notice: 'RFI' } });
+      expect(q.verifyCallback(env(t, { id: 'pay-1' }), {})).toMatchObject({ code: 'MALFORMED' });
+      expect(q.verifyCallback(env(t, { paymentRef: 'has space' }), {})).toMatchObject({ code: 'MALFORMED' });
+      expect(v(env(t, { paymentRef: 'pay-1' }))).toMatchObject({ code: 'MALFORMED' });
     }
   });
   it('requires the envelope fields', () => {
@@ -176,8 +190,10 @@ describe('CpnStubPartner mapping (event types from references_webhooks_webhook-e
     expect(q.verifyCallback(enc('not json'), {})).toMatchObject({ code: 'BAD_SIGNATURE' });
     const thrower = new CpnStubPartner({ ...base, verifySignature: () => { throw new Error('boom'); } });
     expect(thrower.verifyCallback(body, {})).toMatchObject({ code: 'BAD_SIGNATURE' });
-    const truthy = new CpnStubPartner({ ...base, verifySignature: () => 1 as unknown as boolean });
-    expect(truthy.verifyCallback(enc('not json'), {})).toMatchObject({ code: 'MALFORMED' });
+    for (const notBool of [1, 'yes', {}, Promise.resolve(false)]) {
+      const truthy = new CpnStubPartner({ ...base, verifySignature: () => notBool as unknown as boolean });
+      expect(truthy.verifyCallback(body, {})).toMatchObject({ code: 'BAD_SIGNATURE' });
+    }
   });
   it('is labelled a stub', () => {
     expect(p.kind).toBe('CPN_STUB');
@@ -235,5 +251,50 @@ describe('PayoutTracker', () => {
     expect(t.arrived('p')).toBe(false);
     expect(t.arrived('q')).toBe(true);
     expect(t.arrived('none')).toBe(false);
+  });
+  it('an RFI is an RFI_OPEN report with no state change, deduplicated on the partner event id', () => {
+    const t = new PayoutTracker();
+    t.register('p');
+    const rfi = (eventId: string): PartnerCallback => ({ eventId, payoutId: 'p', state: 'PENDING', reason: 'cpn.rfi.informationRequired', notice: 'RFI' });
+    const first = t.apply(rfi('e1'));
+    expect(first).toMatchObject({ kind: 'OK', replayed: false, value: { applied: true, state: 'PENDING', report: { kind: 'RFI_OPEN', payoutId: 'p' } } });
+    expect(t.apply(rfi('e1'))).toMatchObject({ kind: 'OK', replayed: true, value: { applied: false, report: null } });
+    expect(t.apply(rfi('e2'))).toMatchObject({ value: { applied: true } });
+    expect(t.reports().map((r) => r.kind)).toEqual(['RFI_OPEN', 'RFI_OPEN']);
+    expect(t.state('p')).toBe('PENDING');
+    expect(t.arrived('p')).toBe(false);
+    // an RFI does not suppress the real PENDING / PAID that follow
+    expect(t.apply(cb('PAID', 'e3'))).toMatchObject({ value: { applied: true } });
+    expect(t.apply({ ...rfi('e4'), payoutId: 'nope' })).toMatchObject({ code: 'UNKNOWN_PAYOUT' });
+  });
+  it('an RFI for a quarantined payout is refused as CONFLICT (already with Ops)', () => {
+    const t = new PayoutTracker();
+    t.register('p');
+    t.apply(cb('PAID'));
+    t.apply(cb('FAILED'));
+    expect(t.apply({ eventId: 'r', payoutId: 'p', state: 'PENDING', reason: null, notice: 'RFI' })).toMatchObject({ code: 'CONFLICT' });
+  });
+  it('ids containing a colon cannot collide (MC-10): different tuples stay different', () => {
+    const t = new PayoutTracker();
+    t.register('a');
+    t.register('a:PAID');
+    t.register('a:x');
+    expect(t.apply(cb('PAID', 'x', 'a'))).toMatchObject({ value: { applied: true } });
+    // ('a:x','PAID') must not be treated as a replay of ('a', event 'x' ...) or of state PAID on 'a'
+    t.register('b');
+    t.register('b:e');
+    expect(t.apply(cb('PAID', 'e:z', 'b'))).toMatchObject({ value: { applied: true } });
+    expect(t.apply(cb('PAID', 'z', 'b:e'))).toMatchObject({ value: { applied: true } });
+    expect(t.apply(cb('PAID', 'e1', 'a:x'))).toMatchObject({ value: { applied: true } });
+    expect(t.apply(cb('PAID', 'e1', 'a:PAID'))).toMatchObject({ value: { applied: true } });
+  });
+  it('a PAID or FAILED after RETURNED contradicts the first final state; the same one is a replay', () => {
+    const t = new PayoutTracker();
+    t.register('p');
+    t.apply(cb('FAILED'));
+    t.apply(cb('RETURNED'));
+    expect(t.apply(cb('FAILED', 'again'))).toMatchObject({ kind: 'OK', replayed: true });
+    expect(t.apply(cb('PAID', 'late'))).toMatchObject({ code: 'CONFLICT' });
+    expect(t.arrived('p')).toBe(false);
   });
 });

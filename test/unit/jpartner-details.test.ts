@@ -93,7 +93,9 @@ describe('CpnStubPartner wire rules', () => {
     expect(detailOf(bad.verifyCallback(enc('{}'), {}))).toBe('callback signature not valid');
     expect(detailOf(p.verifyCallback(enc('[]'), {}))).toBe('body is not a JSON object');
     expect(detailOf(p.verifyCallback(env('cpn.refund.completed', {}), {}))).toBe('refund names no payment');
-    expect(detailOf(p.verifyCallback(env('cpn.rfi.approved', {}), {}))).toBe('not a payout-state event');
+    expect(detailOf(p.verifyCallback(env('cpn.rfi.approved', {}), {}))).toBe('known event without payout state');
+    expect(detailOf(p.verifyCallback(env('cpn.nope', {}), {}))).toBe('authentic but unrecognised event type: quarantine and page');
+    expect(detailOf(p.verifyCallback(env('cpn.rfi.rejected', {}), {}))).toBe('rfi names no payment');
     expect(detailOf(p.verifyCallback(env('cpn.payment.completed', { id: 'p', status: 'FAILED' }), {}))).toBe('event type and payment status disagree');
     expect(detailOf(p.verifyCallback(enc('{"notificationType":"x"}'), {}))).toBe('callback fields missing or invalid');
   });
@@ -152,6 +154,6 @@ describe('BankRecipient details', () => {
     const kms: KeyManagement = { encrypt: async () => Uint8Array.from([1]), decrypt: async () => bytes };
     const { store } = makeStore(1000n, new Clock(1n), kms);
     const ref = await store.create(novaOwnerRef('o'), bankDetails());
-    await expect(store.reveal(ref)).rejects.toMatchObject({ code: 'CORRUPT_RECORD' });
+    await expect(store.reveal(ref, 'PAYOUT')).rejects.toMatchObject({ code: 'CORRUPT_RECORD' });
   });
 });

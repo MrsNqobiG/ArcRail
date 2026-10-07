@@ -13,19 +13,38 @@
  *
  * Bank details never cross this port: only the opaque `recipientRef`.
  *
- * Recorded deviations and deferrals (docs/NOVA_ARC_DESIGN.md section 7.5, F-17):
- *  - There is no `getPayout` poll and no maximum age for PENDING at this port
- *    yet: a payout whose callbacks never arrive stays PENDING. The poll path
- *    (a partner status read feeding the same tracker) and the max-age page are
- *    DEFERRED to the real adapter; they need the partner's status API, which
- *    the archived CPN docs do not let us shape without inventing fields.
- *  - The registry of created payouts and the dedupe state are in memory only.
- *    After a restart a callback fails closed (UNKNOWN_PAYOUT); a persistent
- *    inbox/outbox (MC-18) is DEFERRED to Nova's PaymentStorePort wiring.
+ * Recorded deviations and deferrals. THIS HEADER IS THE RECORD: they are not in
+ * docs/NOVA_ARC_DESIGN.md section 7.5 / F-17 or the LEDGER, and the integrator
+ * must carry them into a design delta before JPAYOUT wires this port.
+ *  - No `getPayout` poll and no maximum age for PENDING at this port (design F-17
+ *    names `getPayout` / verified callback). A payout whose callbacks never
+ *    arrive stays PENDING. The poll path and the max-age page are DEFERRED to
+ *    the real adapter (they need the partner's status API, which the archived CPN
+ *    docs do not let us shape without inventing fields). OWNER: JPAYOUT or
+ *    JORCH must close this before FIAT_BANK is enabled (MC-12a).
+ *  - The registry of created payouts, the funding-consumption set, the dedupe
+ *    state and the reports are in memory only. After a restart a callback fails
+ *    closed (UNKNOWN_PAYOUT) and the one-funding-one-payout control and the
+ *    REFUND_DUE reports are lost; a persistent inbox/outbox (MC-18) is DEFERRED to
+ *    Nova's PaymentStorePort wiring and must be closed before any non-demo use.
  *  - CPN creates the payment first and funds it afterwards through a payment
  *    transaction (quickstarts_integrate-with-cpn-ofi.md, "2.3"); this port
- *    requires the funding fact before create (stricter, fail closed). Whether
- *    the real flow can honour that order is open (OPEN_QUESTIONS Q-N12, K-56).
+ *    requires the funding fact before create (stricter, fail closed). Whether the
+ *    real flow can honour that order is open (OPEN_QUESTIONS Q-N12).
+ *  - Second port shape: this port sits beside `src/nova-ports/payout.ts`
+ *    `PayoutPartnerPort` (design 7.5), and `PartnerKind` here (CPN_STUB /
+ *    FAKE_PARTNER) sits beside JQUOTE's `PartnerKind` (LIVE / STUB / TEST_FAKE,
+ *    quote/ports.ts). Mapping for the composition root: CPN_STUB and FAKE_PARTNER
+ *    are both non-LIVE (STUB and TEST_FAKE respectively); a LIVE partner has no
+ *    adapter here. JPAYOUT reconciles the two ports; until then this one is
+ *    the only one with callbacks and a tracker.
+ *  - Amount typing: `amount` is `CbsMinor` as design 7.5 types it, but CLAUDE.md
+ *    wants one `FiatMinor<CCY>` per payout currency. DECISION RECORDED, not
+ *    resolved: the runtime backstop is the `isFunded` binding (currency and amount
+ *    are bound to Nova's server-side quote) plus the recipient-currency check.
+ *    JPAYOUT should move to JQUOTE's `FiatAmount<C>` when it wires this port.
+ *  - RFI events (a payment cannot proceed until the OFI answers) are surfaced as
+ *    `RFI_OPEN` reports: work for Ops, not noise.
  */
 import type { CbsMinor } from '../../../amounts/index.js';
 import type { FiatCode, Hex32, IdempotencyKey, KeyConflict, NetworkId, PortResult } from '../../../nova-ports/ids.js';
@@ -38,7 +57,7 @@ export type PartnerKind = 'CPN_STUB' | 'FAKE_PARTNER';
 export interface PartnerPayoutRequest {
   readonly recipientRef: RecipientRef;
   readonly currency: FiatCode;
-  /** > 0, in the payout currency's ledger minor units. */
+  /** > 0, in the payout currency's ledger minor units (typing: see the header). */
   readonly amount: CbsMinor;
   /** The Arc transaction that funded the partner. It can license one payout only. */
   readonly funding: { readonly network: NetworkId; readonly txHash: Hex32 };
@@ -55,12 +74,17 @@ export type CreatePayoutRejectCode =
   | 'AMOUNT_INVALID'
   | 'NOT_FUNDED'
   | 'FUNDING_ALREADY_USED'
+  | 'FUNDING_INVALID'
   | 'BENEFICIARY_INVALID'
   | 'CURRENCY_MISMATCH'
   | 'CROSS_BORDER_DISABLED';
 
-/** IGNORED: authentic, but not a payout-state event (for example an RFI or on-chain transaction notice). */
-export type CallbackRejectCode = 'BAD_SIGNATURE' | 'MALFORMED' | 'IGNORED';
+/**
+ * IGNORED: authentic, and one of the ENUMERATED known non-payout types (RFI progress, on-chain transaction notices, refund created).
+ * UNKNOWN_EVENT: authentic, but a type this adapter does not know. The caller MUST quarantine and page on UNKNOWN_EVENT and MALFORMED:
+ * a terminal signal may be hiding behind it.
+ */
+export type CallbackRejectCode = 'BAD_SIGNATURE' | 'MALFORMED' | 'IGNORED' | 'UNKNOWN_EVENT';
 
 /** What an authentic callback says, in our terms. `eventId` is the partner's own id of the notification. */
 export interface PartnerCallback {
@@ -69,6 +93,8 @@ export interface PartnerCallback {
   readonly state: PartnerPayoutState;
   /** A short machine reason (`[A-Za-z0-9_.-]{1,64}`) or null; never free text. */
   readonly reason: string | null;
+  /** 'RFI': a compliance request from the partner; no state change, an Ops report. */
+  readonly notice?: 'RFI';
 }
 
 export interface PayoutPartner {

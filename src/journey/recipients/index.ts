@@ -13,12 +13,19 @@
  *   USDC blocklist copy is checked first, then the screening port, and anything
  *   but a clear answer fails closed.
  *
+ * - Retention is enforced on access and by `purgeExpired()`. NOTHING here schedules
+ *   the purge: the composition root (OWNER) must call `purgeExpired()` on a timer
+ *   (JTIME / OPS runbook item, to be added by the integrator), or an unread row
+ *   outlives its retention.
+ * - Every `reveal` states a purpose and leaves an access record (no PII).
+ *
  * Money path rule MC-01: no `number`; time is bigint milliseconds.
  */
 import { randomBytes } from 'node:crypto';
 import { asObject, canonicalJson, jsonObject, parseJson, reqString } from '../../dfns/json.js';
 import { normaliseAddress } from '../../nova-ports/ids.js';
 import type { FiatCode, NetworkAddress, NovaOwnerRef } from '../../nova-ports/ids.js';
+import type { UsdcUnits } from '../../amounts/index.js';
 
 /** `util.inspect.custom` without importing node:util (outside the money-path import allow-list, MC-34). */
 const INSPECT = Symbol.for('nodejs.util.inspect.custom');
@@ -77,6 +84,7 @@ export type RecipientErrorCode =
   | 'NOT_FOUND'
   | 'RETENTION_EXPIRED'
   | 'KEY_MANAGEMENT_FAILED'
+  | 'INVALID_PURPOSE'
   | 'CORRUPT_RECORD';
 
 const MESSAGES: Readonly<Record<RecipientErrorCode, string>> = {
@@ -85,6 +93,7 @@ const MESSAGES: Readonly<Record<RecipientErrorCode, string>> = {
   NOT_FOUND: 'recipient not found',
   RETENTION_EXPIRED: 'recipient data past its retention and deleted',
   KEY_MANAGEMENT_FAILED: 'key management failed',
+  INVALID_PURPOSE: 'reveal purpose is not valid',
   CORRUPT_RECORD: 'recipient record could not be decoded',
 };
 
@@ -167,6 +176,17 @@ function decode(bytes: Uint8Array): BankDetails {
   }
 }
 
+/** Why PII is being decrypted. */
+export type RevealPurpose = 'PAYOUT' | 'COMPLIANCE_REVIEW' | 'ERASURE_REQUEST';
+const PURPOSES: readonly string[] = ['PAYOUT', 'COMPLIANCE_REVIEW', 'ERASURE_REQUEST'];
+
+/** One PII access: who it concerned (the opaque ref), why, and when. No PII. */
+export interface RevealRecord {
+  readonly ref: RecipientRef;
+  readonly purpose: RevealPurpose;
+  readonly at: bigint;
+}
+
 export interface BankRecipientStoreOptions {
   readonly keys: KeyManagement;
   /** Milliseconds since the epoch. */
@@ -184,6 +204,7 @@ export class BankRecipientStore {
   readonly #retentionMs: bigint;
   readonly #random: () => Uint8Array;
   readonly #rows = new Map<string, Row>();
+  #access: readonly RevealRecord[] = [];
 
   constructor(o: BankRecipientStoreOptions) {
     if (o.retentionMs <= 0n) throw new RangeError('retentionMs must be > 0');
@@ -207,14 +228,14 @@ export class BankRecipientStore {
     const createdAt = this.#clock();
     this.#rows.set(ref, {
       sealed,
-      meta: {
+      meta: Object.freeze({
         ref: ref as RecipientRef,
         ownerRef,
         country: details.country,
         currency: details.currency,
         createdAt,
         expiresAt: createdAt + this.#retentionMs,
-      },
+      }),
     });
     return ref as RecipientRef;
   }
@@ -224,9 +245,11 @@ export class BankRecipientStore {
     return this.#live(ref).meta;
   }
 
-  /** Decrypts for a stated purpose; the result renders as REDACTED unless read through `use`. */
-  async reveal(ref: string): Promise<Secret<BankDetails>> {
+  /** Decrypts for a stated purpose, which is recorded; the result renders as REDACTED unless read through `use`. */
+  async reveal(ref: string, purpose: RevealPurpose): Promise<Secret<BankDetails>> {
     const row = this.#live(ref);
+    if (!PURPOSES.includes(purpose)) throw new RecipientError('INVALID_PURPOSE');
+    this.#access = [...this.#access, Object.freeze({ ref: row.meta.ref, purpose, at: this.#clock() })];
     let plain: Uint8Array;
     try {
       plain = await this.#keys.decrypt(row.sealed, row.meta.ref);
@@ -234,6 +257,11 @@ export class BankRecipientStore {
       throw new RecipientError('KEY_MANAGEMENT_FAILED');
     }
     return new Secret(decode(plain));
+  }
+
+  /** Every PII access so far, oldest first (a copy; no PII). */
+  accessLog(): readonly RevealRecord[] {
+    return [...this.#access];
   }
 
   /** Deletes one recipient now (the owner's erasure request). True when something was deleted. */
@@ -311,9 +339,19 @@ export interface AddressScreeningPort {
  * (docs/OPEN_QUESTIONS.md Q-R3, Q-R9), so the policy lives behind this hook, not here.
  */
 export type TravelRuleAnswer = 'NOT_REQUIRED' | 'READY' | 'HOLD';
-export interface TravelRuleHook {
-  check(address: NetworkAddress): Promise<TravelRuleAnswer>;
+/** The transfer the answer is for, so the hook can decide per amount and originator. */
+export interface TravelRuleContext {
+  readonly amount: UsdcUnits;
+  readonly originator: NovaOwnerRef;
 }
+export interface TravelRuleHook {
+  check(address: NetworkAddress, transfer: TravelRuleContext): Promise<TravelRuleAnswer>;
+}
+/**
+ * Explicit "no travel-rule check" for the Arc TESTNET demo only (no real value moves). It must never be wired
+ * on mainnet: the hook is REQUIRED, so leaving it out is a compile error and this name is the visible choice.
+ */
+export const TRAVEL_RULE_NOT_APPLICABLE_TESTNET: TravelRuleHook = { check: () => Promise.resolve('NOT_REQUIRED') };
 
 export type WalletRecipientRejectCode =
   | 'ADDRESS_INVALID'
@@ -329,15 +367,16 @@ export type WalletRecipientResult =
 /**
  * The local USDC blocklist copy is checked before every send, then the screening
  * port. Fail closed: a throw, an unknown answer or UNAVAILABLE is a rejection.
- * The optional travel-rule hook (FIC Directive 9) runs last and also fails closed.
+ * The travel-rule hook (FIC Directive 9, REQUIRED, given the transfer context) runs last and also fails closed.
  */
 export async function screenWalletRecipient(
   address: string,
   deps: {
     readonly screening: AddressScreeningPort;
     readonly localBlocklist: (address: NetworkAddress) => boolean;
-    readonly travelRule?: TravelRuleHook;
+    readonly travelRule: TravelRuleHook;
   },
+  transfer: TravelRuleContext,
 ): Promise<WalletRecipientResult> {
   const a = normaliseAddress(address);
   if (a === null) return { kind: 'REJECTED', code: 'ADDRESS_INVALID' };
@@ -354,15 +393,13 @@ export async function screenWalletRecipient(
   }
   if (answer === 'BLOCKED') return { kind: 'REJECTED', code: 'SCREENING_BLOCKED' };
   if (answer !== 'CLEAR') return { kind: 'REJECTED', code: 'SCREENING_UNAVAILABLE' };
-  if (deps.travelRule !== undefined) {
-    let tr: TravelRuleAnswer;
-    try {
-      tr = await deps.travelRule.check(a);
-    } catch {
-      return { kind: 'REJECTED', code: 'TRAVEL_RULE_HOLD' };
-    }
-    if (tr !== 'NOT_REQUIRED' && tr !== 'READY') return { kind: 'REJECTED', code: 'TRAVEL_RULE_HOLD' };
+  let tr: TravelRuleAnswer;
+  try {
+    tr = await deps.travelRule.check(a, transfer);
+  } catch {
+    return { kind: 'REJECTED', code: 'TRAVEL_RULE_HOLD' };
   }
+  if (tr !== 'NOT_REQUIRED' && tr !== 'READY') return { kind: 'REJECTED', code: 'TRAVEL_RULE_HOLD' };
   const recipient = Object.freeze({ kind: 'WALLET', address: a, __screened: true } as const);
   SCREENED.add(recipient);
   return { kind: 'OK', recipient };
