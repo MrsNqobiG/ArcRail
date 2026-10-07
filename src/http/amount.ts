@@ -17,8 +17,14 @@ export function parseDecimalAmount(text: unknown, p: CbsPrecision): ParsedAmount
   const whole = m[1] as string;
   const frac = m[3] ?? '';
   const places = BigInt(p);
-  if (BigInt(frac.length) > places) return { ok: false, reason: `amount has more than ${places} decimal places` };
-  const minor = BigInt(whole + frac.padEnd(Number(places), '0'));
+  let scaled = BigInt(whole);
+  let digits = 0n;
+  for (const ch of frac) {
+    scaled = scaled * 10n + BigInt(ch);
+    digits += 1n;
+  }
+  if (digits > places) return { ok: false, reason: `amount has more than ${places} decimal places` };
+  const minor = scaled * 10n ** (places - digits);
   if (minor <= 0n) return { ok: false, reason: 'amount must be greater than zero' };
   try {
     return { ok: true, minor: cbsMinor(minor) };

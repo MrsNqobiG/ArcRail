@@ -1,6 +1,8 @@
 /**
- * Contract tests shared by the two FxPort fakes and the two PayoutQuotePort
- * fakes of JQUOTE: same behaviour, structurally different implementations.
+ * Contract tests shared by the two FxLocker doubles and the two
+ * PayoutQuotePort fakes of JQUOTE: same behaviour, structurally different
+ * implementations. The two Nova FxPort fakes (pricing codes and fills, D-1)
+ * are exercised through the fill desk in test/unit/jquote-fill.test.ts.
  */
 import { describe, expect, it } from 'vitest';
 import { cbsMinor, cbsPrecision } from '../../src/amounts/index.js';

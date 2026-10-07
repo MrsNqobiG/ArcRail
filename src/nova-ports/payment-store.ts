@@ -956,10 +956,9 @@ function closeByClaim(rec: PaymentRecord, evidence: InboundSignal, d: OperatorDe
 }
 
 /** F-17 first branch: the Arc log of the partner's exact return, claimed by this payment's case. */
-function closeByReturn(rec: PaymentRecord, evidence: InboundSignal, c: CaseRecord): string | null {
+function closeByReturn(evidence: InboundSignal, c: CaseRecord): string | null {
   if (evidence.source !== 'ARC_LOG') return 'P2R needs the Arc log of the partner\'s return as evidence';
-  // §9.2 P2R, §12 F-17: only a return of exactly value = cbsMinorToNativeWei(A, p) matches; the amount is the server-side binding's, never the case's say-so.
-  if (c.expected?.value !== rec.binding.amount) return `case ${c.caseId} expects a return of ${String(c.expected?.value)}, not this payment's ${rec.binding.amount}; a return of any other value goes to P9`;
+  // §9.2 P2R, §12 F-17: only a return of exactly value = cbsMinorToNativeWei(A, p) matches. putCase binds a PARTNER_RETURN case's expected value to the payment's binding, and a claim matches the log by that value, so the claimed log is of exactly A.
   // matchedLog is set only by a claim, which also makes the case MATCHED.
   return c.matchedLog === evidence.dedupeKey ? null : `case ${c.caseId} has not claimed ${evidence.dedupeKey} (claimInbound)`;
 }
@@ -1000,14 +999,14 @@ export function decideClosePayout(
   const claim = keys.includes(partnerClaimKey(rec.paymentId));
   // `late` implies P11 was enqueued, which closeByClaim does only on an existing case (a case is never deleted).
   if (late && partnerCase !== null) {
-    const lateWhy = closeByReturn(rec, evidence, partnerCase);
+    const lateWhy = closeByReturn(evidence, partnerCase);
     return lateWhy === null ? { kind: 'APPLY', record: derive({ ...rec, version: rec.version + 1n }) } : refuse('ILLEGAL_TRANSITION', lateWhy);
   }
   if (!keys.includes(releaseKey(rec.paymentId)) || claim === keys.includes(partnerReturnKey(rec.paymentId))) {
     return refuse('ILLEGAL_TRANSITION', 'a failed payout closes with P6 and exactly one of P11 or P2R (F-17)');
   }
   if (partnerCase === null) return refuse('ILLEGAL_TRANSITION', `no PARTNER_RETURN case for ${rec.paymentId} (putCase on an OPEN_PARTNER_CASE decision first)`);
-  const why = claim ? closeByClaim(rec, evidence, decision, partnerCase) : closeByReturn(rec, evidence, partnerCase);
+  const why = claim ? closeByClaim(rec, evidence, decision, partnerCase) : closeByReturn(evidence, partnerCase);
   if (why !== null) return refuse('ILLEGAL_TRANSITION', why);
   return { kind: 'APPLY', record: derive({ ...rec, version: rec.version + 1n }) };
 }

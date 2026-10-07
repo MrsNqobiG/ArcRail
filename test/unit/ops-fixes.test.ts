@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { cbsMinor, usdcUnits } from '../../src/amounts/index.js';
-import { ambiguous, ok, rejected } from '../../src/nova-ports/ids.js';
+import { ambiguous, idempotencyKey, ok, rejected } from '../../src/nova-ports/ids.js';
 import type { PortResult } from '../../src/nova-ports/ids.js';
 import { AuditLog, GENESIS_HASH, entryHash, verifyChain } from '../../src/ops/audit.js';
 import type { AuditEntry } from '../../src/ops/audit.js';
-import { ArrayAuditStore } from '../../src/ops/fakes.js';
+import { ArrayAuditStore, LogLedger, MapLedger, MapPaymentFacts } from '../../src/ops/fakes.js';
 import { OpsQueue } from '../../src/ops/queue.js';
 import type { OpsDeps } from '../../src/ops/queue.js';
-import type { AuditStorePort } from '../../src/ops/ports.js';
+import type { AuditStorePort, JournalGuard, OpsJournal, PaymentFactsPort } from '../../src/ops/ports.js';
 import { D1_NAME_OF, legKeys, optionDigest, optionProblem, termsProblem } from '../../src/ops/types.js';
 import type { CaseOption, CaseRecord, QuoteTerms } from '../../src/ops/types.js';
 import {
@@ -763,5 +763,34 @@ describe('P14 reprice and decision keys', () => {
     const o: CaseOption = OPT.requote();
     expect(o.action).toBe('REQUOTE');
     expect(SETTLEMENT).toHaveLength(64);
+  });
+});
+
+describe.each([
+  ['map', (f: PaymentFactsPort) => new MapLedger(f)],
+  ['log', (f: PaymentFactsPort) => new LogLedger(f)],
+])('ledger fake %s enforces the guard and the limit in the posting', (_n, make) => {
+  const journal = (guard: JournalGuard, limit: OpsJournal['limit'] = null): OpsJournal => ({ template: 'P6', legs: legs(100n), paymentId: PAY, guard, limit });
+  it('refuses a guarded journal for an unknown payment, and checks each guard kind', async () => {
+    const facts = new MapPaymentFacts();
+    const l = make(facts);
+    expect(await l.post(idempotencyKey('g:1'), journal({ arc: 'NOT_SENT', p6Unposted: false }))).toMatchObject({ code: 'LEG_GUARD' });
+    facts.set(PAY, FACTS_PROVEN);
+    expect(await l.post(idempotencyKey('g:2'), journal({ arc: 'NONE', p6Unposted: false }))).toMatchObject({ code: 'LEG_GUARD' });
+    expect(await l.post(idempotencyKey('g:3'), journal({ arc: 'RETURN_CLAIMED', p6Unposted: false }))).toMatchObject({ code: 'LEG_GUARD' });
+    expect(await l.post(idempotencyKey('g:4'), journal({ arc: 'NOT_UNRESOLVED', p6Unposted: true }))).toMatchObject({ kind: 'OK' });
+    expect(await l.post(idempotencyKey('g:4b'), journal({ arc: 'ANY', p6Unposted: true }))).toMatchObject({ kind: 'OK' });
+    facts.set(PAY, { ...FACTS_PROVEN, p6Posted: true });
+    expect(await l.post(idempotencyKey('g:5'), journal({ arc: 'ANY', p6Unposted: true }))).toMatchObject({ code: 'LEG_GUARD' });
+    expect(await l.post(idempotencyKey('g:6'), journal({ arc: 'NOT_SENT', p6Unposted: false }))).toMatchObject({ kind: 'OK' });
+  });
+  it('keeps a running total per payment and bucket', async () => {
+    const l = make(new MapPaymentFacts());
+    const lim = (bucket: 'REFUND' | 'WRITE_OFF') => journal({ arc: 'ANY', p6Unposted: false }, { bucket, unit: 'USDC_UNITS', cap: 250n });
+    expect(await l.post(idempotencyKey('l:1'), lim('REFUND'))).toMatchObject({ kind: 'OK' });
+    expect(await l.post(idempotencyKey('l:2'), lim('REFUND'))).toMatchObject({ kind: 'OK' });
+    expect(await l.post(idempotencyKey('l:3'), lim('REFUND'))).toMatchObject({ code: 'LIMIT_EXCEEDED' });
+    expect(await l.post(idempotencyKey('l:4'), lim('WRITE_OFF'))).toMatchObject({ kind: 'OK' });
+    expect(await l.post(idempotencyKey('l:1'), lim('REFUND'))).toMatchObject({ kind: 'OK', replayed: true });
   });
 });

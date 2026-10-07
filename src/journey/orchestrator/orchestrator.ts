@@ -28,7 +28,7 @@ import type { Notifier } from '../timeline/notifier.js';
 import { safeNotifier } from '../timeline/notifier.js';
 import type { Clock } from '../quote/ports.js';
 import type { JourneyMoney } from '../quote/compose.js';
-import type { ArcSendPort, CasePort, ConversionStep, FundsPort, JourneyOrder, PayInPort, PayoutPort } from './ports.js';
+import type { ArcSendPort, CasePort, ConversionStep, DecisionPort, FundsPort, JourneyOrder, PayInPort, PayoutPort } from './ports.js';
 
 export interface OrchestratorConfig {
   readonly flags: JourneyFlags;
@@ -51,6 +51,8 @@ export interface OrchestratorDeps {
   readonly conversion: ConversionStep | null;
   readonly arc: ArcSendPort;
   readonly payout: PayoutPort | null;
+  /** The OPS case store, read to resume a held journey after a two-person decision. Null: no resume (stays held, fail closed). */
+  readonly decisions?: DecisionPort | null;
 }
 
 export interface JourneyStore {
@@ -115,6 +117,9 @@ export class InMemoryJourneyStore implements JourneyStore {
 }
 
 export type StartRefusal = 'KEY_CONFLICT' | 'UNKNOWN_PAYMENT';
+export type ResumeRefusal =
+  | 'UNKNOWN_PAYMENT' | 'NOT_HELD' | 'NO_DECISION_SOURCE' | 'CASE_NOT_FOUND' | 'CASE_UNAVAILABLE' | 'CASE_NOT_OURS'
+  | 'CASE_NOT_CLOSED' | 'ACTION_NOT_SUPPORTED' | 'NO_JOURNAL' | 'NOT_REFUNDABLE';
 export type RetryRefusal = 'NOT_FOUND' | 'NOT_TERMINAL_FAILED' | 'ALREADY_RETRIED' | 'UNRESOLVED_NOT_PROVEN' | 'SAME_PAYMENT' | 'CLIENT_MISMATCH' | 'FUNDS_NOT_RETURNED';
 
 export function moneyMinor(m: JourneyMoney): bigint {
@@ -123,6 +128,11 @@ export function moneyMinor(m: JourneyMoney): bigint {
 
 function instant(ms: bigint): string {
   return new Date(Number(ms)).toISOString();
+}
+/** History document ids (src/history DOC_ID_RE); a reference that does not fit is left out, never rewritten. */
+const DOC_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+function docs(...refs: (string | null)[]): { id: string }[] {
+  return refs.filter((r): r is string => r !== null && DOC_ID_RE.test(r)).map((id) => ({ id }));
 }
 function lc(s: string): string {
   return s.toLowerCase().replace(/_/g, '-');
@@ -151,6 +161,11 @@ export class JourneyOrchestrator {
       txHash: null, payoutStartedAtMs: null, refundDue: null, refunded: false, terminal: false, hold: null, caseIds: [], notified: new Set(),
       outbox: [], historyGapSinceMs: null, historyGapCaseOpened: false, retriedBy: null,
     };
+    const first = legs[0];
+    await this.record(rec, {
+      kind: 'LEG', code: 'PAYMENT_CREATED', eventId: 'payment-created', stage: 'CREATED', status: STATUS_BY_STAGE.CREATED,
+      ...(first === undefined ? {} : { leg: first.leg }),
+    });
     this.d.store.put(rec);
     return this.advance(order.paymentId);
   }
@@ -181,6 +196,8 @@ export class JourneyOrchestrator {
     if (old.arcUnresolved) return { refused: 'UNRESOLVED_NOT_PROVEN' };
     if (!old.terminal || paymentState(old.legs.map((l) => l.state)).stage === 'COMPLETED') return { refused: 'NOT_TERMINAL_FAILED' };
     if (old.refundDue !== null && !old.refunded) return { refused: 'FUNDS_NOT_RETURNED' };
+    // A fill was booked and nothing reached Arc: the converted funds sit with a case until a human unwinds them.
+    if (old.converted && !old.refunded && this.legState(old, 'ARC_TRANSFER').stage !== 'COMPLETED') return { refused: 'FUNDS_NOT_RETURNED' };
     old.retriedBy = next.paymentId;
     this.d.store.put(old);
     const order: JourneyOrder = { ...next, retryOf: original };
@@ -197,6 +214,53 @@ export class JourneyOrchestrator {
     await this.flushHistory(rec);
     this.d.store.put(rec);
     return true;
+  }
+
+  /**
+   * Resumes a held journey after its OPS case was decided (two-person, in OPS). The decision is read back from the
+   * case store, never taken from the caller. Only REFUND is applied here: OPS already posted the refund journal
+   * (P6 / P13), so the orchestrator posts nothing; it closes the open leg as CANCELLED_BY_OPERATOR and records the
+   * refund with the journal reference. Refused (the journey stays held) when anything was converted, sent or is
+   * unresolved on Arc (D-2: never a REFUND before the D-6 proofs). Other decisions are refused for now (fail closed).
+   */
+  async resumeAfterDecision(id: PaymentId): Promise<JourneyOutcome | { readonly refused: ResumeRefusal }> {
+    const rec = this.d.store.get(id);
+    if (rec === null) return { refused: 'UNKNOWN_PAYMENT' };
+    if (rec.terminal && rec.refunded) return this.outcomeOf(rec, null);
+    const hold = rec.hold;
+    if (hold === null || rec.terminal) return { refused: 'NOT_HELD' };
+    const source = this.d.decisions ?? null;
+    if (source === null) return { refused: 'NO_DECISION_SOURCE' };
+    if (hold.caseId === null) return { refused: 'CASE_NOT_FOUND' };
+    const got = await source.getCase(hold.caseId);
+    if (got.kind === 'AMBIGUOUS') return { refused: 'CASE_UNAVAILABLE' };
+    if (got.kind === 'REJECTED') return { refused: 'CASE_NOT_FOUND' };
+    const c = got.value;
+    if (c.caseId !== hold.caseId || c.paymentId !== rec.order.paymentId || c.clientUid !== rec.order.clientUid || c.kind !== hold.kind) return { refused: 'CASE_NOT_OURS' };
+    if (c.status !== 'CLOSED' || c.outcome === null) return { refused: 'CASE_NOT_CLOSED' };
+    const o = c.outcome;
+    if (o.action !== 'REFUND') return { refused: 'ACTION_NOT_SUPPORTED' };
+    if (o.journalRef === null) return { refused: 'NO_JOURNAL' };
+    if (rec.arcUnresolved || rec.arcSent || rec.converted) return { refused: 'NOT_REFUNDABLE' };
+    const open = rec.legs.find((l) => l.state.stage === 'CREATED');
+    if (open === undefined) return { refused: 'NOT_REFUNDABLE' };
+    await this.record(rec, {
+      kind: 'OPERATOR_ACTION', code: 'REFUND', eventId: `op-${lc(o.decisionId)}`.slice(0, 64), leg: open.leg,
+      operator: { actor: `decision:${o.decisionId}`.slice(0, 128), reasonCode: 'REFUND', caseRef: c.caseId },
+    });
+    if (!(await this.move(rec, open.leg, { stage: 'CANCELLED', reason: 'CANCELLED_BY_OPERATOR' }, 'OPERATOR_DECISION', 'NONE'))) {
+      await this.flushHistory(rec);
+      this.d.store.put(rec);
+      return { refused: 'NOT_REFUNDABLE' };
+    }
+    rec.terminal = true;
+    rec.hold = null;
+    rec.refundDue = this.refundKind(rec) ?? (rec.order.quote.payIn.method === 'FIAT' ? 'PAYIN' : 'RESERVE');
+    rec.refunded = true;
+    await this.recordRefunded(rec, o.journalRef);
+    await this.flushHistory(rec);
+    this.d.store.put(rec);
+    return this.outcomeOf(rec, null);
   }
 
   // ---------------------------------------------------------------- core
@@ -291,7 +355,7 @@ export class JourneyOrchestrator {
         await this.fail(rec, leg, 'QUOTE_EXPIRED', 'INTERNAL', 'NONE');
         return 'STOP';
       case 'HELD':
-        await this.holdCase(rec, this.heldKind(r.reason), r.reason, r.caseId);
+        await this.holdCase(rec, r.caseKind ?? this.heldKind(r.reason), r.reason, r.caseId);
         return 'STOP';
       case 'FAILED_CLOSED':
         await this.quarantine(rec, 'INVARIANT_FAILED', `pay-in failed closed: ${r.detail}`);
@@ -302,6 +366,7 @@ export class JourneyOrchestrator {
           return 'STOP';
         }
         rec.payInConfirmed = true;
+        await this.record(rec, { kind: 'LEG', code: 'PAYIN_CONFIRMED', eventId: 'payin-confirmed', leg, documents: docs(r.evidenceRef) });
         if (leg === 'AWAIT_DEPOSIT' && !(await this.move(rec, 'AWAIT_DEPOSIT', { stage: 'COMPLETED', reason: null }, 'ARC_LOG', 'NONE'))) return 'STOP';
         await this.notify(rec, 'PAYIN_RECEIVED');
         return 'NEXT';
@@ -313,7 +378,8 @@ export class JourneyOrchestrator {
     if (reason === 'CONFIRMED_BELOW_EXPECTED') return 'UNDERPAYMENT';
     if (reason === 'CONFIRMED_ABOVE_EXPECTED') return 'OVERPAYMENT';
     if (reason === 'PAYIN_AFTER_QUOTE_EXPIRY') return 'LATE_PAYIN';
-    if (reason === 'CONSENT_MISSING') return 'CONSENT_MISSING';
+    // D-3: no valid consent is a QUARANTINE of the item (as JPAYIN opens it); CONSENT_MISSING-kind reasons differ.
+    if (reason === 'CONSENT_MISSING') return 'QUARANTINE';
     return 'QUARANTINE';
   }
 
@@ -322,6 +388,12 @@ export class JourneyOrchestrator {
     // A balance reservation after the quote has expired is refused; a confirmed pay-in was already handled by JPAYIN.
     if (!rec.payInConfirmed && now >= q.expiresAtMs) {
       await this.fail(rec, 'RESERVE', 'QUOTE_EXPIRED', 'INTERNAL', 'NONE');
+      return 'STOP';
+    }
+    // A fiat journey whose pricing code is already stale reserves nothing (no money moves on a stale code, D-1).
+    // The client's pay-in is in: a requote needs the client's consent, so it is a REQUOTE case (D-2), never automatic.
+    if (q.convertIn !== null && this.codeExpired(rec, now)) {
+      await this.holdCase(rec, 'REQUOTE', 'RATE_EXPIRED', null);
       return 'STOP';
     }
     const r = await this.d.funds.reserve(rec.order);
@@ -344,9 +416,10 @@ export class JourneyOrchestrator {
       await this.quarantine(rec, 'INVARIANT_FAILED', 'conversion leg without a conversion port');
       return 'STOP';
     }
-    // Never execute on an expired code.
-    if (now >= line.expiresAtMs || now >= rec.order.quote.expiresAtMs) {
-      await this.failWithRefund(rec, 'CONVERT_IN', 'QUOTE_EXPIRED', 'INTERNAL');
+    // Never execute on an expired code. The money is in and reserved: a requote (with consent) or a refund is a
+    // two-person decision on a REQUOTE case (D-1, D-2), never an automatic refund.
+    if (this.codeExpired(rec, now)) {
+      await this.holdCase(rec, 'REQUOTE', 'RATE_EXPIRED', null);
       return 'STOP';
     }
     const r = await port.convert(rec.order, now);
@@ -355,20 +428,21 @@ export class JourneyOrchestrator {
       case 'PENDING':
       case 'UNAVAILABLE':
         return 'WAIT';
+      // Same mapping as the fill desk's `fillCaseFor` (src/journey/quote/fill.ts).
       case 'EXPIRED':
-        await this.failWithRefund(rec, 'CONVERT_IN', 'QUOTE_EXPIRED', 'CONVERSION');
+        await this.holdCase(rec, 'REQUOTE', 'RATE_EXPIRED', r.caseId ?? null);
         return 'STOP';
       case 'REJECTED':
-        await this.holdCase(rec, 'REQUOTE', 'RATE_CHANGED', null);
+        await this.holdCase(rec, 'REQUOTE', 'RATE_CHANGED', r.caseId ?? null);
         return 'STOP';
       case 'REQUOTE':
-        await this.holdCase(rec, 'REQUOTE', r.cause, null);
+        await this.holdCase(rec, 'REQUOTE', r.cause, r.caseId ?? null);
         return 'STOP';
       case 'UNMATCHED_FILL':
-        await this.holdCase(rec, 'UNMATCHED_FILL', r.reason, null);
+        await this.holdCase(rec, 'UNMATCHED_FILL', r.reason, r.caseId ?? null);
         return 'STOP';
       case 'FILL_TIMEOUT':
-        await this.holdCase(rec, 'FILL_TIMEOUT', 'NO_FILL_BY_TIMEOUT', null);
+        await this.holdCase(rec, 'FILL_TIMEOUT', 'NO_FILL_BY_TIMEOUT', r.caseId ?? null);
         return 'STOP';
       case 'FILLED':
         if (r.toAmount !== line.to) {
@@ -402,7 +476,12 @@ export class JourneyOrchestrator {
         rec.arcSent = true;
         rec.txHash = r.txHash;
         if (!(await this.ensureSubmitted(rec))) return 'STOP';
-        await this.fail(rec, 'ARC_TRANSFER', 'ONCHAIN_REVERTED', 'ARC_LOG', 'KNOWN');
+        if (!(await this.fail(rec, 'ARC_TRANSFER', 'ONCHAIN_REVERTED', 'ARC_LOG', 'KNOWN'))) return 'STOP';
+        // A booked fill is unwound by a human (P12), never by an automatic fiat refund (that would count the money twice).
+        if (rec.converted) {
+          await this.ensureCase(rec, 'QUARANTINE', 'INVARIANT_FAILED');
+          return 'STOP';
+        }
         // The chain moved nothing: the reservation is released, never reversed on-chain.
         rec.refundDue = this.refundKind(rec);
         await this.settleRefund(rec);
@@ -485,11 +564,25 @@ export class JourneyOrchestrator {
     const r = await this.d.funds.refund(rec.order, rec.refundDue);
     if (r === 'OK') {
       rec.refunded = true;
-      await this.record(rec, { kind: 'LEG', code: 'FUNDS_REFUNDED', eventId: 'funds-refunded', leg: this.firstLeg(rec) });
+      await this.recordRefunded(rec, null);
     } else if (r === 'INSUFFICIENT_FUNDS') {
       await this.ensureCase(rec, 'QUARANTINE', 'INVARIANT_FAILED');
     }
     // UNAVAILABLE: refundDue stays set; the next advance retries (idempotent per payment).
+  }
+
+  /** FUNDS_REFUNDED carries the failed leg's terminal stage, status and reason (D-4: every leg with its status). */
+  private async recordRefunded(rec: JourneyRecord, journalRef: string | null): Promise<void> {
+    const failed = rec.legs.find((l) => l.state.reason !== null) ?? { leg: this.firstLeg(rec), state: paymentState(rec.legs.map((l) => l.state)) };
+    await this.record(rec, {
+      kind: 'LEG', code: 'FUNDS_REFUNDED', eventId: 'funds-refunded', leg: failed.leg, stage: failed.state.stage, status: STATUS_BY_STAGE[failed.state.stage],
+      ...(failed.state.reason === null ? {} : { reason: failed.state.reason }), documents: docs(journalRef),
+    });
+  }
+
+  private codeExpired(rec: JourneyRecord, now: bigint): boolean {
+    const line = rec.order.quote.convertIn;
+    return now >= rec.order.quote.expiresAtMs || (line !== null && now >= line.expiresAtMs);
   }
 
   private async fail(rec: JourneyRecord, leg: LegKind, reason: RejectedReason | 'QUOTE_EXPIRED' | 'PAYOUT_FAILED' | 'INSUFFICIENT_FUNDS' | 'METHOD_NOT_ENABLED' | 'ONCHAIN_REVERTED', source: SignalSource, request: DfnsRequest): Promise<boolean> {
@@ -564,7 +657,7 @@ export class JourneyOrchestrator {
     rec: JourneyRecord,
     e: {
       kind: HistoryEntryInput['kind']; code: string; eventId: string; leg?: LegKind; stage?: Stage; status?: TransactionStatus; reason?: string;
-      retryOfOverride?: PaymentId; paymentOverride?: PaymentId; operator?: { actor: string; reasonCode: string; caseRef?: string };
+      retryOfOverride?: PaymentId; paymentOverride?: PaymentId; operator?: { actor: string; reasonCode: string; caseRef?: string }; documents?: { id: string }[];
     },
   ): Promise<void> {
     const input: HistoryEntryInput = {
@@ -574,6 +667,7 @@ export class JourneyOrchestrator {
       ...(e.reason === undefined ? {} : { reason: e.reason }), ...(e.leg === undefined ? {} : { leg: e.leg }),
       ...(e.retryOfOverride === undefined ? {} : { retryOf: e.retryOfOverride }), ...(e.operator === undefined ? {} : { operator: e.operator }),
       ...(rec.txHash !== null && e.leg === 'ARC_TRANSFER' ? { txHash: rec.txHash } : {}),
+      ...(e.documents === undefined || e.documents.length === 0 ? {} : { documents: e.documents }),
     };
     rec.outbox.push(input);
   }

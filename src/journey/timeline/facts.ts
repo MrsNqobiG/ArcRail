@@ -34,9 +34,9 @@ export interface Fact {
   readonly occurredAt: string;
   /** CHAIN facts: chain evidence. */
   readonly chain?: {
-    readonly chainId: number;
+    readonly chainId: bigint;
     readonly txHash: Hex32;
-    readonly logIndex: number;
+    readonly logIndex: bigint;
     readonly emitter: string;
     readonly to: NetworkAddress;
     readonly confirmed: boolean;
@@ -68,7 +68,7 @@ export function isWellFormedFact(f: Fact): boolean {
     if (c === undefined) return false;
     if (!c.confirmed || c.emitter.toLowerCase() !== SYSTEM_EMITTER) return false;
     if (typeof c.units !== 'bigint' || c.units <= 0n) return false;
-    if (!Number.isInteger(c.logIndex) || c.logIndex < 0) return false;
+    if (typeof c.logIndex !== 'bigint' || c.logIndex < 0n || typeof c.chainId !== 'bigint') return false;
   }
   if (f.kind === 'PAYIN_CONFIRMED' && f.source === 'CHAIN' && (f.chain === undefined || !f.chain.confirmed)) return false;
   return true;

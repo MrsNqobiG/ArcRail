@@ -226,14 +226,15 @@ export function fillDigest(e: FillEvent): string {
 // The desk.
 // ---------------------------------------------------------------------------
 
-type CodeState = 'OPEN' | 'UNUSABLE' | 'SUPERSEDED' | 'FILLED' | 'UNMATCHED' | 'NOT_FILLED';
+/** A code's life: OPEN until its one outcome; SUPERSEDED by a requote after its fill window; UNUSABLE when refused at issue. */
+export type CodeState = 'OPEN' | 'UNUSABLE' | 'SUPERSEDED' | 'FILLED' | 'UNMATCHED' | 'NOT_FILLED';
 
 interface Unmatched {
   readonly fill: FilledEvent;
   readonly refusal: FillRefusal;
   readonly detail: string;
-  readonly adoptable: boolean;
-  caseId: string | null;
+  /** The code's lock when the fill is adoptable (checks 2-4 passed), else null. */
+  readonly adoptLock: FxLock | null;
   resolution: 'OPEN' | 'ADOPTED' | 'REVERSED';
   reversalRef: string | null;
 }
@@ -243,9 +244,10 @@ interface CodeRow {
   readonly novaKey: IdempotencyKey;
   readonly canonical: string;
   readonly binding: CodeBinding;
-  /** Null when the code was refused when issued (`refusal` says why). */
-  readonly lock: FxLock | null;
-  readonly refusal: { readonly code: FxRejectCode; readonly detail: string } | null;
+  /** The code's lock, or why it was refused when issued (state UNUSABLE). */
+  readonly issued: Issued;
+  /** End of the fill window: the code's expiresAt + fillTimeoutAfterExpiryMs (0 for a code refused when issued: never OPEN). */
+  readonly deadlineMs: bigint;
   state: CodeState;
   fill: FilledEvent | null;
   timeoutCaseId: string | null;
@@ -256,13 +258,24 @@ interface CodeRow {
 type Recorded = Extract<FillDecision, { readonly kind: 'FILL_ACCEPTED' | 'UNMATCHED_FILL' | 'REQUOTE_REQUIRED' | 'UNKNOWN_CODE' }>;
 type Decided = Recorded | Extract<FillDecision, { readonly kind: 'RETRY' }>;
 
+/** A decision and how to (re)open its case, idempotently (OPS dedupes on kind and subject). */
+interface Outcome {
+  readonly decision: Decided;
+  readonly reopen: () => Promise<string | null>;
+}
+
 interface EventRow {
   readonly digest: string;
   decision: Recorded | null;
-  pending: Promise<Decided> | null;
+  reopen: () => Promise<string | null>;
+  pending: Promise<Outcome> | null;
 }
 
-type Judgement = { readonly refusal: FillRefusal; readonly detail: string; readonly adoptable: boolean } | null | 'RETRY';
+const NO_CASE = async (): Promise<string | null> => null;
+
+type Issued = { readonly lock: FxLock } | { readonly code: FxRejectCode; readonly detail: string };
+
+type Judgement = { readonly refusal: FillRefusal; readonly detail: string; readonly adoptLock: FxLock | null } | null | 'RETRY';
 
 function canonicalRequest(req: QuoteRequest): string {
   return JSON.stringify([req.from, req.to, req.amount.toString(), req.side]);
@@ -300,8 +313,7 @@ export class FillDesk {
     const prior = this.#byKey.get(novaKey);
     if (prior !== undefined) {
       if (prior.canonical !== canonical) return rejected('KEY_CONFLICT', `key ${key} reused with another request`);
-      if (prior.lock === null) return rejected(prior.refusal?.code ?? 'BAD_CODE', prior.refusal?.detail ?? 'refused');
-      return ok(prior.lock, true);
+      return 'lock' in prior.issued ? ok(prior.issued.lock, true) : rejected(prior.issued.code, prior.issued.detail);
     }
     const block = this.#blocked(binding.paymentId);
     if (block !== null) return rejected('FILL_OUTSTANDING', block);
@@ -314,30 +326,30 @@ export class FillDesk {
     if (r.kind !== 'OK') return r;
     const code = r.value;
     if (!isFxRef(code.codeId)) return rejected('BAD_CODE', 'the pricing code has no usable id');
-    const other = this.#codes.get(code.codeId);
-    if (other !== undefined && other.novaKey !== novaKey) return rejected('BAD_CODE', `code ${code.codeId} is already bound to another request`);
-    const evaluated = this.#evaluate(req, code, fromPrec.value, toPrec.value);
+    // A key seen before returned above, so a known code id here is bound to another request.
+    if (this.#codes.has(code.codeId)) return rejected('BAD_CODE', `code ${code.codeId} is already bound to another request`);
+    const issued = this.#evaluate(req, code, fromPrec.value, toPrec.value);
+    const usable = 'lock' in issued;
+    if (usable) for (const old of this.#rowsOf(binding.paymentId)) if (old.state === 'OPEN') old.state = 'SUPERSEDED';
     const row: CodeRow = {
       codeId: code.codeId,
       novaKey,
       canonical,
       binding,
-      lock: 'lock' in evaluated ? evaluated.lock : null,
-      refusal: 'lock' in evaluated ? null : evaluated,
-      state: 'lock' in evaluated ? 'OPEN' : 'UNUSABLE',
+      issued,
+      deadlineMs: usable ? issued.lock.expiresAtMs + this.#timeoutMs : 0n,
+      state: usable ? 'OPEN' : 'UNUSABLE',
       fill: null,
       timeoutCaseId: null,
       unmatched: null,
     };
-    if (row.state === 'OPEN') for (const old of this.#rowsOf(binding.paymentId)) if (old.state === 'OPEN') old.state = 'SUPERSEDED';
     this.#byKey.set(novaKey, row);
     this.#codes.set(code.codeId, row);
-    if (row.lock === null) return rejected(row.refusal?.code ?? 'BAD_CODE', row.refusal?.detail ?? 'refused');
-    return ok(row.lock, r.replayed);
+    return usable ? ok(issued.lock, r.replayed) : rejected(issued.code, issued.detail);
   }
 
   /** The code's lock, or why it cannot be used. Pure: the code is recorded either way, so a fill on it is never dropped. */
-  #evaluate(req: QuoteRequest, code: PricingCode, fromPrec: CbsPrecision, toPrec: CbsPrecision): { readonly lock: FxLock } | { readonly code: FxRejectCode; readonly detail: string } {
+  #evaluate(req: QuoteRequest, code: PricingCode, fromPrec: CbsPrecision, toPrec: CbsPrecision): Issued {
     if (!isPositiveRatio(code.rate)) return { code: 'BAD_CODE', detail: 'the code rate is not a ratio of positive integers' };
     const expiresAtMs = this.#deps.readExpiry(code.expiresAt);
     if (expiresAtMs === null) return { code: 'BAD_EXPIRY', detail: `unreadable expiry ${JSON.stringify(code.expiresAt)}` };
@@ -359,7 +371,7 @@ export class FillDesk {
     const now = this.#deps.clock.nowMs();
     for (const row of this.#rowsOf(paymentId)) {
       if (row.state === 'FILLED') return `the payment has a booked conversion (code ${row.codeId})`;
-      if (row.state === 'OPEN' && row.lock !== null && now < row.lock.expiresAtMs + this.#timeoutMs) return `the outcome of code ${row.codeId} is not known yet`;
+      if (row.state === 'OPEN' && now < row.deadlineMs) return `the outcome of code ${row.codeId} is not known yet`;
       if (row.unmatched !== null && row.unmatched.resolution === 'OPEN') return `the booked fill of code ${row.codeId} is not adopted or reversed`;
     }
     return null;
@@ -384,24 +396,24 @@ export class FillDesk {
     if (seen !== undefined && seen.digest !== digest) return this.#conflict(ev.codeId, seen.digest);
     if (seen !== undefined && seen.decision !== null) return this.#replay(seen, seen.decision);
     if (seen !== undefined && seen.pending !== null) {
-      const first = await seen.pending;
+      const first = (await seen.pending).decision;
       return first.kind === 'RETRY' ? first : this.#replay(seen, first);
     }
-    const row: EventRow = seen ?? { digest, decision: null, pending: null };
+    const row: EventRow = seen ?? { digest, decision: null, reopen: NO_CASE, pending: null };
     this.#events.set(dedupeKey, row);
     const pending = this.#decide(ev);
     row.pending = pending;
-    const d = await pending;
+    const { decision, reopen } = await pending;
     row.pending = null;
-    if (d.kind !== 'RETRY') row.decision = d;
-    return d;
+    row.reopen = reopen;
+    if (decision.kind !== 'RETRY') row.decision = decision;
+    return decision;
   }
 
   /** The recorded decision again, with no second effect; a case that could not be opened before is retried. */
   async #replay(ev: EventRow, d: Recorded): Promise<FillDecision> {
-    const row = this.#codes.get(d.codeId);
-    if ((d.kind === 'UNMATCHED_FILL' || d.kind === 'REQUOTE_REQUIRED') && d.caseId === null && row !== undefined) {
-      const caseId = d.kind === 'UNMATCHED_FILL' ? await this.#unmatchedCase(row) : await this.#unfilledCase(row, d.outcome);
+    if ((d.kind === 'UNMATCHED_FILL' || d.kind === 'REQUOTE_REQUIRED') && d.caseId === null) {
+      const caseId = await ev.reopen();
       ev.decision = { ...d, caseId };
       return { ...d, caseId, duplicate: true };
     }
@@ -416,50 +428,49 @@ export class FillDesk {
     return { kind: 'SIGNAL_CONFLICT', codeId, paymentId: row.binding.paymentId, caseId, duplicate: false };
   }
 
-  async #decide(ev: FillEvent): Promise<Decided> {
+  async #decide(ev: FillEvent): Promise<Outcome> {
     const row = this.#codes.get(ev.codeId);
-    if (row === undefined) return { kind: 'UNKNOWN_CODE', codeId: ev.codeId, duplicate: false };
+    if (row === undefined) return { decision: { kind: 'UNKNOWN_CODE', codeId: ev.codeId, duplicate: false }, reopen: NO_CASE };
     const paymentId = row.binding.paymentId;
     if (ev.kind !== 'FILLED') {
       row.state = 'NOT_FILLED';
-      return { kind: 'REQUOTE_REQUIRED', codeId: ev.codeId, paymentId, outcome: ev.kind, caseId: await this.#unfilledCase(row, ev.kind), duplicate: false };
+      const outcome = ev.kind;
+      const reopen = async (): Promise<string | null> => this.#openCase(row, outcome, `code:${row.codeId}`, null, [`code:${row.codeId}`, `outcome:${outcome}`]);
+      return { decision: { kind: 'REQUOTE_REQUIRED', codeId: ev.codeId, paymentId, outcome, caseId: await reopen(), duplicate: false }, reopen };
     }
     const j = await this.#judge(row, ev);
-    if (j === 'RETRY') return { kind: 'RETRY', detail: 'the booked entry read-back outcome is unknown' };
+    if (j === 'RETRY') return { decision: { kind: 'RETRY', detail: 'the booked entry read-back outcome is unknown' }, reopen: NO_CASE };
     if (j === null) {
       row.state = 'FILLED';
       row.fill = ev;
-      return { kind: 'FILL_ACCEPTED', codeId: ev.codeId, paymentId, fill: ev, duplicate: false };
+      return { decision: { kind: 'FILL_ACCEPTED', codeId: ev.codeId, paymentId, fill: ev, duplicate: false }, reopen: NO_CASE };
     }
     row.state = 'UNMATCHED';
-    row.unmatched = { fill: ev, refusal: j.refusal, detail: j.detail, adoptable: j.adoptable, caseId: null, resolution: 'OPEN', reversalRef: null };
-    const caseId = await this.#unmatchedCase(row);
-    return { kind: 'UNMATCHED_FILL', codeId: ev.codeId, paymentId, refusal: j.refusal, detail: j.detail, adoptable: j.adoptable, bookedEntryRef: ev.bookedEntryRef, caseId, duplicate: false };
+    const u: Unmatched = { fill: ev, refusal: j.refusal, detail: j.detail, adoptLock: j.adoptLock, resolution: 'OPEN', reversalRef: null };
+    row.unmatched = u;
+    const reopen = async (): Promise<string | null> => this.#openCase(row, u.refusal, `fill:${row.codeId}`, ev.bookedEntryRef, [`fill:${row.codeId}`, `booked:${ev.bookedEntryRef}`, `refusal:${u.refusal}`]);
+    const caseId = await reopen();
+    return { decision: { kind: 'UNMATCHED_FILL', codeId: ev.codeId, paymentId, refusal: j.refusal, detail: j.detail, adoptable: j.adoptLock !== null, bookedEntryRef: ev.bookedEntryRef, caseId, duplicate: false }, reopen };
   }
 
-  /** Checks 1-5 in order. Null: accept. `adoptable` only when checks 2-4 passed (verifier delta1 B1). */
+  /**
+   * Checks 1-5 in order. Null: accept. Adoptable (the lock is returned) only
+   * when checks 2-4 passed (verifier delta1 B1). A row reaching here is OPEN,
+   * SUPERSEDED or UNUSABLE: any other state already has its one outcome, so a
+   * second event for it is a duplicate or a SIGNAL_CONFLICT.
+   */
   async #judge(row: CodeRow, fill: FilledEvent): Promise<Judgement> {
-    if (row.lock === null || (row.state !== 'OPEN' && row.state !== 'SUPERSEDED')) return { refusal: 'CODE_NOT_OPEN', detail: `code ${row.codeId} is ${row.state}`, adoptable: false };
-    const terms = fillTermsProblem(row.lock.quote, fill);
-    if (terms !== null) return { refusal: terms, detail: 'the fill is not the code quote', adoptable: false };
+    if (!('lock' in row.issued)) return { refusal: 'CODE_NOT_OPEN', detail: `code ${row.codeId} is ${row.state}`, adoptLock: null };
+    const lock = row.issued.lock;
+    const terms = fillTermsProblem(lock.quote, fill);
+    if (terms !== null) return { refusal: terms, detail: 'the fill is not the code quote', adoptLock: null };
     const rb = await this.#deps.ledger.getBookedEntry(fill.bookedEntryRef);
     if (rb.kind === 'AMBIGUOUS') return 'RETRY';
     const why = rb.kind === 'REJECTED' ? `booked entry ${fill.bookedEntryRef} not found` : bookedEntryProblem(rb.value, fill, { ...row.binding.accounts, dust: this.#dust });
-    if (why !== null) return { refusal: 'FILL_MISPOSTED', detail: why, adoptable: false };
-    if (row.state === 'SUPERSEDED') return { refusal: 'CODE_SUPERSEDED', detail: `code ${row.codeId} was superseded by a requote`, adoptable: true };
-    if (!filledInTime(fill, row.lock.expiresAtMs)) return { refusal: 'FILLED_AFTER_EXPIRY', detail: `filled at ${fill.filledAtMs}, code expired at ${row.lock.expiresAtMs}`, adoptable: true };
+    if (why !== null) return { refusal: 'FILL_MISPOSTED', detail: why, adoptLock: null };
+    if (row.state === 'SUPERSEDED') return { refusal: 'CODE_SUPERSEDED', detail: `code ${row.codeId} was superseded by a requote`, adoptLock: lock };
+    if (!filledInTime(fill, lock.expiresAtMs)) return { refusal: 'FILLED_AFTER_EXPIRY', detail: `filled at ${fill.filledAtMs}, code expired at ${lock.expiresAtMs}`, adoptLock: lock };
     return null;
-  }
-
-  async #unmatchedCase(row: CodeRow): Promise<string | null> {
-    const u = row.unmatched;
-    if (u === null) return null;
-    u.caseId = await this.#openCase(row, u.refusal, `fill:${row.codeId}`, u.fill.bookedEntryRef, [`fill:${row.codeId}`, `booked:${u.fill.bookedEntryRef}`, `refusal:${u.refusal}`]);
-    return u.caseId;
-  }
-
-  async #unfilledCase(row: CodeRow, outcome: 'REJECTED' | 'EXPIRED'): Promise<string | null> {
-    return this.#openCase(row, outcome, `code:${row.codeId}`, null, [`code:${row.codeId}`, `outcome:${outcome}`]);
   }
 
   async #openCase(row: CodeRow, cause: FillCaseCause, subject: string, bookedEntryRef: string | null, evidenceRefs: readonly string[]): Promise<string | null> {
@@ -472,7 +483,7 @@ export class FillDesk {
     const now = this.#deps.clock.nowMs();
     let out: readonly FillTimeout[] = [];
     for (const row of [...this.#codes.values()]) {
-      if (row.state !== 'OPEN' || row.lock === null || row.timeoutCaseId !== null || now < row.lock.expiresAtMs + this.#timeoutMs) continue;
+      if (row.state !== 'OPEN' || row.timeoutCaseId !== null || now < row.deadlineMs) continue;
       row.timeoutCaseId = await this.#openCase(row, 'FILL_TIMEOUT', `fill-timeout:${row.codeId}`, null, [`code:${row.codeId}`, 'refusal:FILL_TIMEOUT']);
       out = [...out, { codeId: row.codeId, paymentId: row.binding.paymentId, caseId: row.timeoutCaseId }];
     }
@@ -490,16 +501,16 @@ export class FillDesk {
    */
   adopt(codeId: string): PortResult<FxLock, AdoptCode> {
     const row = this.#codes.get(codeId);
-    const u = row?.unmatched ?? null;
-    if (row === undefined || u === null || u.resolution !== 'OPEN' || row.lock === null) return rejected('NOT_FOUND', `no unresolved booked fill on code ${codeId}`);
-    if (!u.adoptable) return rejected('NOT_ADOPTABLE', `${u.refusal}: closes only by a reversal (P12)`);
+    if (row === undefined || row.unmatched === null || row.unmatched.resolution !== 'OPEN') return rejected('NOT_FOUND', `no unresolved booked fill on code ${codeId}`);
+    const u = row.unmatched;
+    if (u.adoptLock === null) return rejected('NOT_ADOPTABLE', `${u.refusal}: closes only by a reversal (P12)`);
     if (this.#quarantined.has(row.binding.paymentId)) return rejected('NOT_ADOPTABLE', 'the payment is quarantined');
     for (const other of this.#rowsOf(row.binding.paymentId)) if (other.state === 'FILLED') return rejected('CONVERSION_EXISTS', `the payment already has a booked conversion (code ${other.codeId})`);
     for (const other of this.#rowsOf(row.binding.paymentId)) if (other.state === 'OPEN') other.state = 'SUPERSEDED';
     u.resolution = 'ADOPTED';
     row.state = 'FILLED';
     row.fill = u.fill;
-    return ok(row.lock, false);
+    return ok(u.adoptLock, false);
   }
 
   /** REVERSE (D-2 `REVERSE_FILL`, two-person): records the posted compensating reversal (P12) of a refused booked fill. */
@@ -511,14 +522,25 @@ export class FillDesk {
     return ok(undefined, false);
   }
 
-  /** The close-time invariant: one booked conversion per payment, or a reversal for each extra. Null when it holds. */
+  /**
+   * The close-time invariant: one booked conversion per payment, or a
+   * reversal for each extra. Null when it holds. A second accepted
+   * conversion cannot arise (the requote guard and `adopt` refuse it), so
+   * what remains to check is that every refused booked fill is adopted or
+   * reversed.
+   */
   bookedConversionProblem(paymentId: PaymentId): string | null {
-    let booked = 0n;
     for (const row of this.#rowsOf(paymentId)) {
       if (row.unmatched !== null && row.unmatched.resolution === 'OPEN') return `the booked fill of code ${row.codeId} is neither adopted nor reversed`;
-      if (row.state === 'FILLED') booked += 1n;
     }
-    return booked > 1n ? `${booked} booked conversions for one payment` : null;
+    return null;
+  }
+
+  /** A code's state and, for a refused booked fill, how it was resolved (for operators and audit); null for an unknown code. */
+  codeStatus(codeId: string): { readonly state: CodeState; readonly resolution: Unmatched['resolution'] | null; readonly reversalRef: string | null } | null {
+    const row = this.#codes.get(codeId);
+    if (row === undefined) return null;
+    return { state: row.state, resolution: row.unmatched?.resolution ?? null, reversalRef: row.unmatched?.reversalRef ?? null };
   }
 
   /** True after a SIGNAL_CONFLICT on any of the payment's codes: the journey must not move the payment's money. */

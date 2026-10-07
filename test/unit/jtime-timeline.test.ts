@@ -30,10 +30,10 @@ function fact(kind: Fact['kind'], source: Fact['source'], over: Partial<Fact> = 
   return { kind, source, factId: `f:${String(n)}`, occurredAt: `2026-10-07T10:00:${String(10 + n).padStart(2, '0')}Z`, ...over };
 }
 function arc(to: NetworkAddress = WALLET, over: Record<string, unknown> = {}): Fact {
-  return fact('ARC_CONFIRMED', 'CHAIN', { chain: { chainId: 5042002, txHash: TX, logIndex: 1, emitter: SYSTEM_EMITTER, to, confirmed: true, units: 5_000_000n, ...over } as NonNullable<Fact['chain']> });
+  return fact('ARC_CONFIRMED', 'CHAIN', { chain: { chainId: 5042002n, txHash: TX, logIndex: 1n, emitter: SYSTEM_EMITTER, to, confirmed: true, units: 5_000_000n, ...over } as NonNullable<Fact['chain']> });
 }
 function ctx(i: string, o: string): TimelineContext {
-  return { payIn: PAYINS[i] as PayInMethod, payout: PAYOUTS[o] as PayoutMethod, receiverAddress: WALLET, chainId: 5042002 };
+  return { payIn: PAYINS[i] as PayInMethod, payout: PAYOUTS[o] as PayoutMethod, receiverAddress: WALLET, chainId: 5042002n };
 }
 const done = (t: ReturnType<typeof buildTimeline>) => t.filter((s) => s.state === 'DONE').map((s) => s.step);
 
@@ -71,7 +71,7 @@ describe('licensing', () => {
     expect(done(buildTimeline(ctx('STABLE', 'STABLE'), [fact('ARC_SUBMITTED', 'LEDGER')]))).toEqual(['SENT']);
   });
   it('unconfirmed, wrong-emitter, wrong-chain or zero-amount logs license nothing', () => {
-    for (const bad of [{ confirmed: false }, { emitter: `0x${'ee'.repeat(20)}` }, { chainId: 1 }, { units: 0n }]) {
+    for (const bad of [{ confirmed: false }, { emitter: `0x${'ee'.repeat(20)}` }, { chainId: 1n }, { units: 0n }]) {
       expect(done(buildTimeline(ctx('STABLE', 'STABLE'), [arc(WALLET, bad)]))).toEqual([]);
     }
   });
@@ -123,18 +123,18 @@ function record(i: string, o: string, facts: Fact[], legs?: LegState[], over: Pa
   const states: LegState[] = legs ?? journeyLegs(pi, po).map(() => ({ stage: 'CREATED', reason: null }) as LegState);
   return {
     paymentId: PID, ownerRef: 'owner-1', payIn: pi, payout: po, legs: states, compensatedBy: null, facts,
-    send: { code: 'USDC', units: 5_000_000n, decimals: 6 }, receive: { code: 'USDC', units: 4_990_000n, decimals: 6 },
-    receiverAddress: WALLET, chainId: 5042002, ...over,
+    send: { code: 'USDC', units: 5_000_000n, decimals: 6n }, receive: { code: 'USDC', units: 4_990_000n, decimals: 6n },
+    receiverAddress: WALLET, chainId: 5042002n, ...over,
   };
 }
 const completed = (k: number): LegState[] => Array.from({ length: k }, () => ({ stage: 'COMPLETED', reason: null }) as LegState);
 
 describe('amounts and view', () => {
   it('formatUnits is exact', () => {
-    expect(formatUnits(1n, 6)).toBe('0.000001');
-    expect(formatUnits(12_345_678n, 6)).toBe('12.345678');
-    expect(formatUnits(5n, 0)).toBe('5');
-    expect(() => formatUnits(-1n, 6)).toThrow();
+    expect(formatUnits(1n, 6n)).toBe('0.000001');
+    expect(formatUnits(12_345_678n, 6n)).toBe('12.345678');
+    expect(formatUnits(5n, 0n)).toBe('5');
+    expect(() => formatUnits(-1n, 6n)).toThrow();
   });
   it('status and stage come from src/status', () => {
     const v = viewOf(record('STABLE', 'STABLE', [arc()], completed(2)));
@@ -222,7 +222,7 @@ describe('notifier', () => {
     expect((await hook.send(m)).kind).toBe('SENT');
     expect(((await hook.send(m)) as { replayed: boolean }).replayed).toBe(true);
     const email = new EmailNotifier(new Map([['o', 'a@example.test']]));
-    email.failNext = 1;
+    email.failNext = 1n;
     expect((await email.send(m)).kind).toBe('FAILED');
     expect((await email.send(m)).kind).toBe('SENT');
   });

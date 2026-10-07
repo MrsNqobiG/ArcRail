@@ -43,6 +43,7 @@
 import { checkQuote } from '../../nova-ports/conversion.js';
 import type { Quote, QuoteRejectCode, QuoteRequest, RatioQuote } from '../../nova-ports/conversion.js';
 import type { FiatCode, IdempotencyKey, LedgerAssetCode, PortResult } from '../../nova-ports/ids.js';
+import { accountKey } from '../../nova-ports/ledger.js';
 import type { LedgerAccount, LedgerLeg } from '../../nova-ports/ledger.js';
 import { addCbsMinor, cbsMinor, CBS_MINOR_MAX, subtractCbsMinor } from '../../amounts/index.js';
 import type { CbsMinor, CbsPrecision } from '../../amounts/index.js';
@@ -236,7 +237,8 @@ export function quoteAtCodeRate(req: QuoteRequest, code: PricingCode, fromPrec: 
     from: { asset: req.from, amount: side === 'from' ? req.amount : fit.used.from, precision: fromPrec },
     to: { asset: req.to, amount: fit.used.to, precision: toPrec },
     rate: code.rate,
-    remainder: side === 'from' ? fit.rest : cbsMinor(0n),
+    // TO_EXACT returned above unless the rest is 0, so `rest` is the remainder on both sides.
+    remainder: fit.rest,
     expiresAt: code.expiresAt,
     provider: 'otc-code',
   };
@@ -323,10 +325,6 @@ export interface FillAccounts {
   readonly dust: LedgerAccount;
 }
 
-function sameAccount(a: LedgerAccount, b: LedgerAccount): boolean {
-  return a.kind === 'CUSTOMER' ? b.kind === 'CUSTOMER' && a.account === b.account : b.kind === 'ROLE' && a.role === b.role && a.sub === b.sub;
-}
-
 /** Debit and credit totals of `account` across the journals in `asset`. */
 function totals(entry: BookedEntry, asset: LedgerAssetCode, account: LedgerAccount): { readonly debits: bigint; readonly credits: bigint } {
   let debits = 0n;
@@ -334,7 +332,7 @@ function totals(entry: BookedEntry, asset: LedgerAssetCode, account: LedgerAccou
   for (const j of entry.journals) {
     if (j.asset !== asset) continue;
     for (const l of j.legs) {
-      if (!sameAccount(l.account, account)) continue;
+      if (accountKey(l.account) !== accountKey(account)) continue;
       if (l.side === 'DEBIT') debits += l.amount;
       else credits += l.amount;
     }

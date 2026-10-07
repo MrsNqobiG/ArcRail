@@ -300,21 +300,23 @@ describe('journey walkthrough (narrated)', () => {
     const before = new Map<string, bigint>();
     log('STEPS');
     r.w.postingsSince();
-    log('  [5 ms pass after the pay-in confirms; the pricing code is now stale]');
+    log('  [5 ms pass after the pay-in confirms; the pricing code is now stale, so nothing is reserved]');
     r.clock.advance(5n);
     const o = out(await r.orch.start(order));
     outcomeLine(o);
-    expect(o).toMatchObject({ stage: 'EXPIRED', reason: 'QUOTE_EXPIRED', refunded: true, status: 'FAILED' });
+    expect(o).toMatchObject({ state: 'HELD', hold: { kind: 'REQUOTE', reason: 'RATE_EXPIRED' }, refunded: false });
     log(`  desk fill calls: ${String(r.scripted.conversion.calls)}   Arc send calls: ${String(r.scripted.arc.calls)}   (both must be 0)`);
-    log(`  ops cases      : ${r.cases.opened.length === 0 ? 'none' : r.cases.opened.map((c) => `${c.caseId}:${c.kind}`).join(', ')}`);
+    log(`  ops cases      : ${r.cases.opened.length === 0 ? 'none' : r.cases.opened.map((c) => `${c.caseId}:${c.kind}/${c.reason}`).join(', ')}`);
     expect(r.scripted.conversion.calls).toBe(0);
     expect(r.scripted.arc.calls).toBe(0);
-    expect(r.funds.bal('payer')).toBe(0n);
-    expect(r.funds.bal('world')).toBe(0n);
+    expect(r.cases.opened.map((c) => `${c.kind}/${c.reason}`)).toEqual(['REQUOTE/RATE_EXPIRED']);
+    // Nothing moved on the stale code: no reservation, the client's pay-in is untouched until two people decide (requote with consent, or refund).
+    expect(r.funds.bal('payer')).toBe(PAYER);
+    expect(r.funds.bal('reserved')).toBe(0n);
     expect(r.funds.bal('clearing')).toBe(0n);
     const hist = await finish(r, before);
-    expect(hist.map((x) => x.entry.code)).toEqual(['LEG_COMPLETED', 'FAILED_QUOTE_EXPIRED', 'FUNDS_REFUNDED']);
-    log(`  pay-in refunded: ${String(o.refunded)}  (payer account ${dec(r.funds.bal('payer'))}, outside world ${dec(r.funds.bal('world'))}: the ${dec(PAYER)} went back out)`);
+    expect(hist.map((x) => x.entry.code)).toEqual(['PAYMENT_CREATED', 'PAYIN_CONFIRMED', 'HELD_RATE_EXPIRED']);
+    log(`  held for a REQUOTE case: payer account ${dec(r.funds.bal('payer'))} (the pay-in waits for the operators' decision; no automatic refund)`);
   });
 
   it('Failure: unknown DFNS outcome', async () => {

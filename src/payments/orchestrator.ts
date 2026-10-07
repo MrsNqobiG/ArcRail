@@ -11,14 +11,20 @@
  *  - P1 before any DFNS request; P2/P3/P4 only with the COMPLETED signal, which only our own chain read
  *    (ARC_LOG) can carry; P6 only on proof (§8.4 check 3) and only with the signal that fails the payment.
  *  - An unknown DFNS outcome (leg UNRESOLVED) is never ended or released. It is resolved through the submit
- *    marker's externalId: a lookup first, and only when that lookup completes and finds nothing is the SAME bytes
- *    re-sent through the gateway (DFNS answers an existing externalId with the existing entity [DF:idem]).
- *    Never a new externalId, never a new payment.
+ *    marker's externalId (§8.4 check 3 "How it resolves", F-6): a lookup first, and only when that lookup
+ *    completes and finds nothing is the SAME bytes re-sent through the gateway, which DFNS documents for exactly
+ *    this case (an existing externalId answers 200 with the existing entity, a request that never arrived is
+ *    created once [DF:idem]). The gateway checks the bytes against the marker's bodyDigest and refuses a re-POST
+ *    while the payment is QUARANTINED. Never a new externalId, never a new payment. Still unresolved after
+ *    `A_ambiguous` (Q-N6): no further re-POST; an UNRESOLVED_SUBMIT case QUARANTINES the payment and pages, and
+ *    only a two-person LIFT_QUARANTINE re-opens the re-POST (F-6).
+ *  - Every gateway refusal flagged `quarantine`, a SIGNAL_CONFLICT (§10.3, F-18) and every DFNS anomaly
+ *    QUARANTINES the payment through an Ops case, or PAUSES the rail when no case fits or none can be recorded.
  *  - Anything unexplained (log differs from the binding, foreign gas payer, DFNS anomaly) pauses or holds; it
  *    never completes and never releases.
  */
 import { nativeWei, nativeWeiToUsdcUnits } from '../amounts/index.js';
-import type { CbsMinor, CbsPrecision } from '../amounts/index.js';
+import type { CbsMinor, CbsPrecision, NativeWei } from '../amounts/index.js';
 import type { DfnsClient } from '../dfns/client.js';
 import { mapTransferStatus, transferDedupeKey, transferPayloadDigest } from '../dfns/types.js';
 import type { DfnsTransfer } from '../dfns/types.js';
@@ -29,12 +35,13 @@ import type { GasDustStore } from '../nova-ports/gas-dust.js';
 import { lpDigestHex, normaliseHex32 } from '../nova-ports/ids.js';
 import type { BeneficiaryRef, Hex32, IdempotencyKey, LedgerAssetCode, NovaAccountRef, NovaOwnerRef } from '../nova-ports/ids.js';
 import type { LedgerPort } from '../nova-ports/ledger.js';
-import { arcLeg, releaseKey } from '../nova-ports/payment-store.js';
-import type { InboundSignal, LegTransition, OutboxItem, PaymentRecord, PaymentStorePort, SignalOutcome, TransferBinding } from '../nova-ports/payment-store.js';
+import { arcLeg, deriveCaseId, releaseKey } from '../nova-ports/payment-store.js';
+import type { CaseKind, InboundSignal, LegTransition, OutboxItem, PaymentRecord, PaymentStorePort, SignalOutcome, TransferBinding } from '../nova-ports/payment-store.js';
 import type { ReceiverPort } from '../nova-ports/receiver.js';
 import type { WalletRegistryPort } from '../nova-ports/wallet-registry.js';
 import type { LegState, RejectedReason, SignalSource } from '../status/index.js';
 import { isNonTerminal } from '../status/index.js';
+import { caseState } from './gateway-store.js';
 import { gasKey, ledgerKey, deriveRequestIds } from './keys.js';
 import { p1Reserve, p2Settle, p3Fee, p4Gas, p6Release, splitGas } from './postings.js';
 import type { PostingConfig } from './postings.js';
@@ -58,7 +65,23 @@ export interface PaymentsDeps {
   readonly dfns: Pick<DfnsClient, 'getTransfer' | 'findTransferByExternalId'>;
   readonly gateway: Pick<SigningGateway, 'submit'>;
   readonly dust: GasDustStore;
+  readonly timers: PaymentTimers;
 }
+
+/**
+ * The design's timers (§12). Time arithmetic stays with the caller (no clock maths on the money path);
+ * a timer only ever quarantines and pages, it never ends a leg or releases money (F-4, F-6).
+ */
+export interface PaymentTimers {
+  /** True once `A_ambiguous` (Q-N6) has passed since `sinceIso` (the submit marker's `markedAt`). */
+  ambiguousElapsed(sinceIso: string): boolean;
+}
+// TODO(§12 F-2 A_approval, F-4 T_pending, F-5 A_stuck, F-9 A_xcheck): these timers need the time a leg entered
+// PENDING_APPROVAL / CONFIRMING, which PaymentRecord (§7.3) does not carry yet. Until it does they are not built;
+// nothing is released meanwhile (no timer ever releases), so the gap is liveness and paging only, not money.
+// TODO(§8.6, Q-N3): a DFNS `Rejected` maps to APPROVAL_DENIED; telling APPROVAL_EXPIRED apart needs
+// `GET /v2/policy-approvals/{id}`. Either way the release is proof (a1) and the amount is the same.
+// TODO(§8.4 check 7 post-check): compare the receipt's effectiveGasPrice with the fee ceiling and page on a breach.
 
 export interface CreateInput {
   readonly payer: NovaOwnerRef;
@@ -152,7 +175,7 @@ export class PaymentOrchestrator {
     const wallet = hot[0];
     if (wallet === undefined || hot.length !== 1) return { kind: 'REFUSED', code: 'NO_HOT_WALLET', detail: 'exactly one ACTIVE company TREASURY_HOT wallet is required' };
 
-    let wei;
+    let wei: NativeWei;
     try {
       wei = this.d.network.toNetworkAmount(input.amount, this.cfg.precision);
     } catch {
@@ -210,6 +233,15 @@ export class PaymentOrchestrator {
   // ---- RESERVE (P1) --------------------------------------------------------------------------------
 
   private async reserveStep(rec: PaymentRecord): Promise<StepResult> {
+    // P1 may already be posted (a crash or AMBIGUOUS applySignal after the post). Then the pre-checks below must not
+    // end the leg without P6, so a posted P1 only completes RESERVE; the gateway re-runs the checks before any POST
+    // and a refusal there ends the leg WITH P6 (afterSubmit).
+    const already = await this.d.ledger.getJournalByKey(ledgerKey(rec.paymentId, 'p1'));
+    if (already.kind !== 'OK') return { record: rec, changed: false, note: 'P1 lookup outcome unknown: waiting' };
+    if (already.value !== null) {
+      const a = await this.apply(rec, 'LEDGER', `ledger:pay:${rec.paymentId}:p1`, { leg: 'RESERVE', to: { stage: 'COMPLETED', reason: null } }, []);
+      return this.result(a, 'RESERVED');
+    }
     // Checks that need no money: they end the Arc leg before P1, so there is nothing to release.
     const refusal = await this.preReserveRefusal(rec);
     if (refusal === 'WAIT') return { record: rec, changed: false, note: 'BLOCKLIST_STALE: waiting' };
@@ -260,7 +292,13 @@ export class PaymentOrchestrator {
       if (found.kind === 'OK' && found.value !== null) return this.applyDfns(rec, found.value);
       if (found.kind !== 'OK') return { record: rec, changed: false, note: 'UNRESOLVED: lookup by externalId did not complete; no retry' };
       // The lookup completed and shows nothing. Listing absence is not proof either (Q-N21), so the only
-      // permitted retry is the gateway's re-POST of the marker's own bytes, which DFNS deduplicates by externalId.
+      // permitted retry is the gateway's re-POST of the marker's own bytes, which DFNS deduplicates by externalId
+      // (§8.4 check 3, F-6). After A_ambiguous: QUARANTINE with an UNRESOLVED_SUBMIT case, no re-POST until lifted.
+      if (this.d.timers.ambiguousElapsed(leg.submit.markedAt)) {
+        const s = await caseState(this.d.store, 'UNRESOLVED_SUBMIT', rec.paymentId);
+        if (s === 'NONE') return this.quarantine(rec, 'UNRESOLVED_SUBMIT', 'unresolved after A_ambiguous (F-6)');
+        if (s !== 'LIFTED') return { record: rec, changed: false, note: 'QUARANTINED (UNRESOLVED_SUBMIT): no re-POST until LIFT_QUARANTINE' };
+      }
     }
     const out = await this.d.gateway.submit({ paymentId: rec.paymentId, proposed: this.proposed(rec) });
     return this.afterSubmit(rec, out);
@@ -281,7 +319,30 @@ export class PaymentOrchestrator {
       const a = await this.apply(fresh, 'INTERNAL', `internal:pay:${rec.paymentId}:${reason.toLowerCase()}`, { leg: ARC, to: { stage: 'REJECTED', reason } }, this.releaseOutbox(fresh));
       return this.result(a, `REFUSED ${out.code}`);
     }
-    return { record: fresh, changed: false, note: `REFUSED ${out.code}${out.quarantine ? ' (quarantine)' : ''}` };
+    if (out.quarantine) {
+      // The gateway asks the caller to QUARANTINE and page (§2 rule 5). With a marker the leg is UNRESOLVED (F-6);
+      // without one no DFNS request exists, and a binding, chain or wallet mismatch is a breach: PAUSE (F-10).
+      if (arcLeg(fresh).submit !== null) return this.quarantine(fresh, 'UNRESOLVED_SUBMIT', `gateway ${out.code}: ${out.detail}`);
+      await this.d.store.pause(`gateway ${out.code} for ${rec.paymentId}: ${out.detail}`, 'pay-orchestrator');
+      return { record: fresh, changed: false, note: `REFUSED ${out.code} (quarantine): rail paused` };
+    }
+    return { record: fresh, changed: false, note: `REFUSED ${out.code}` };
+  }
+
+  /**
+   * QUARANTINE one payment: an OPEN Ops case of `kind` names it, gateway check 5 refuses it (gatewayStoreFor), and Ops
+   * is paged through the case. Nothing ends, nothing is released. If the case cannot be opened, or one was already
+   * lifted and a new reason arrives, the whole rail PAUSES instead (fail closed, two-person unpause).
+   */
+  private async quarantine(rec: PaymentRecord, kind: CaseKind, why: string): Promise<StepResult> {
+    const s = await caseState(this.d.store, kind, rec.paymentId);
+    if (s === 'QUARANTINED') return { record: rec, changed: false, note: `QUARANTINED (${kind}): ${why}` };
+    if (s === 'NONE') {
+      const put = await this.d.store.putCase({ caseId: deriveCaseId(kind, rec.paymentId), kind, subject: rec.paymentId, expected: null, state: 'OPEN', decisions: [], matchedLog: null });
+      if (put.kind === 'OK') return { record: rec, changed: false, note: `QUARANTINED (${kind}): ${why}` };
+    }
+    await this.d.store.pause(`cannot quarantine ${rec.paymentId} (${kind}, case ${s}): ${why}`, 'pay-orchestrator');
+    return { record: rec, changed: false, note: `QUARANTINE not recordable (${kind}): rail paused: ${why}` };
   }
 
   private precheckReason(code: string): RejectedReason | null {
@@ -334,7 +395,8 @@ export class PaymentOrchestrator {
         return this.result(a, 'DFNS Failed with txHash: the chain decides');
       }
       case 'ANOMALY':
-        return { record: rec, changed: false, note: `QUARANTINED: ${m.detail}` };
+        // DFNS contradicts itself or shows a replacement (F-18): never applied, QUARANTINE and page.
+        return this.quarantine(rec, 'REPLACEMENT', `DFNS anomaly: ${m.detail}`);
     }
   }
 
@@ -375,9 +437,12 @@ export class PaymentOrchestrator {
       await this.d.store.pause(`chain transfer for ${txHash} differs from the binding`, 'pay-orchestrator');
       return { record: rec, changed: false, note: 'binding breach: rail paused' };
     }
-    const outbox: OutboxItem[] = [{ key: ledgerKey(rec.paymentId, 'p2'), topic: 'P2', payload: `${rec.paymentId}|${txHash}` }];
-    if (rec.fee > 0n) outbox.push({ key: ledgerKey(rec.paymentId, 'p3'), topic: 'P3', payload: `${rec.paymentId}|${txHash}` });
-    outbox.push(gasItem);
+    const payload = `${rec.paymentId}|${txHash}`;
+    const outbox: readonly OutboxItem[] = [
+      { key: ledgerKey(rec.paymentId, 'p2'), topic: 'P2', payload },
+      ...(rec.fee > 0n ? [{ key: ledgerKey(rec.paymentId, 'p3'), topic: 'P3', payload }] : []),
+      gasItem,
+    ];
     const a = await this.applySource(rec, 'ARC_LOG', this.logKey(only), this.logDigest(only), { leg: ARC, to: { stage: 'COMPLETED', reason: null }, txHash }, outbox);
     return this.result(a, 'confirmed on chain');
   }
@@ -464,6 +529,12 @@ export class PaymentOrchestrator {
     if (r.kind === 'OK') return { record: r.value.record, outcome: r.value.outcome, detail: r.value.outcome };
     const fresh = await this.reread(rec);
     if (r.kind === 'AMBIGUOUS') return { record: fresh, outcome: 'AMBIGUOUS', detail: r.cause };
+    if (r.code === 'SIGNAL_CONFLICT') {
+      // §10.3: different content under one dedupe key (a changed txHash after a speed-up, F-18) → QUARANTINE.
+      // A conflicting chain read is not a DFNS matter: PAUSE.
+      if (source === 'DFNS_POLL') await this.quarantine(fresh, 'REPLACEMENT', `SIGNAL_CONFLICT on ${dedupeKey}`);
+      else await this.d.store.pause(`SIGNAL_CONFLICT on ${dedupeKey} for ${rec.paymentId}`, 'pay-orchestrator');
+    }
     return { record: fresh, outcome: 'REFUSED', detail: `${r.code}: ${r.detail}` };
   }
 

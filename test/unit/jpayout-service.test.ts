@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { cbsMinor, usdcUnits } from '../../src/amounts/index.js';
-import { PayoutService } from '../../src/journey/payout/index.js';
+import { PayoutConfigError, PayoutService } from '../../src/journey/payout/index.js';
 import type { D1PaymentsPort, PayoutCase, PayoutServiceDeps } from '../../src/journey/payout/index.js';
 import { FAKE_SIGNATURE_HEADER, FakePartner, fakePartnerSign } from '../../src/journey/payout/partner/fake.js';
 import { TRAVEL_RULE_NOT_APPLICABLE_TESTNET } from '../../src/journey/recipients/index.js';
-import type { AddressScreeningPort, RecipientRef, ScreeningAnswer } from '../../src/journey/recipients/index.js';
+import type { RecipientRef } from '../../src/journey/recipients/index.js';
+import { DenyListScreeningFake, RiskScoreScreeningFake } from '../../src/journey/payout/screening-fakes.js';
 import { EventMirrorBlocklist, SetBlocklist } from '../../src/network/arc/blocklist-fakes.js';
 import { fiatCode, normaliseAddress, novaOwnerRef, ok, rejected } from '../../src/nova-ports/ids.js';
 import type { Hex32, IdempotencyKey, NetworkAddress, NetworkId } from '../../src/nova-ports/ids.js';
@@ -19,24 +20,12 @@ const PAYER = novaOwnerRef('owner-1');
 const addr = (s: string): NetworkAddress => normaliseAddress(s) as NetworkAddress;
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
-/** Fake screening 1: a static deny-list. */
-class ListScreen implements AddressScreeningPort {
-  constructor(readonly deny: string[] = [], readonly down = false) {}
-  async screen(a: NetworkAddress): Promise<ScreeningAnswer> {
-    if (this.down) throw new Error('down');
-    return this.deny.includes(a) ? 'BLOCKED' : 'CLEAR';
-  }
-}
-/** Fake screening 2: a scored provider (risk score threshold), structurally different. */
-class ScoreScreen implements AddressScreeningPort {
-  calls = 0;
-  constructor(readonly score: (a: string) => bigint) {}
-  async screen(a: NetworkAddress): Promise<ScreeningAnswer> {
-    this.calls += 1;
-    const s = this.score(a);
-    return s >= 80n ? 'BLOCKED' : s < 0n ? 'UNAVAILABLE' : 'CLEAR';
-  }
-}
+const ListScreen = (deny: NetworkAddress[] = [], down = false): DenyListScreeningFake => {
+  const f = new DenyListScreeningFake(deny);
+  f.down = down;
+  return f;
+};
+const ScoreScreen = (score: (a: string) => bigint): RiskScoreScreeningFake => new RiskScoreScreeningFake(score);
 
 class Payments implements D1PaymentsPort {
   creates: { key: IdempotencyKey; to: NetworkAddress; amount: bigint }[] = [];
@@ -68,8 +57,10 @@ function setup(over: Partial<PayoutServiceDeps> & { country?: string; currency?:
   const deps: PayoutServiceDeps = {
     payments,
     partner,
-    screening: new ListScreen(),
+    screening: ListScreen(),
     blocklist: new SetBlocklist(1n),
+    blocklistMaxAgeMs: 60_000n,
+    clock: () => 1_000n,
     travelRule: TRAVEL_RULE_NOT_APPLICABLE_TESTNET,
     cases: { open: async (c) => { cases.push(c); } },
     recipients: () => ({ country: over.country ?? 'ZA', currency: fiatCode(over.currency ?? 'ZAR') }),
@@ -122,7 +113,7 @@ describe('STABLECOIN_WALLET payout', () => {
       expect(r).toMatchObject({ kind: 'REJECTED', code: 'BLOCKLISTED' });
       expect(t.payments.creates).toHaveLength(0);
       expect(t.svc.record('p1')?.status).toBe('HELD');
-      expect(t.cases).toEqual([{ payoutId: 'p1', kind: 'SCREEN_HOLD', reason: 'BLOCKLISTED' }]);
+      expect(t.cases).toEqual([{ payoutId: 'p1', kind: 'QUARANTINE', reason: 'BLOCKLISTED' }]);
     });
   }
   it('unblocklisted again is allowed (event mirror fold)', async () => {
@@ -131,7 +122,7 @@ describe('STABLECOIN_WALLET payout', () => {
     expect((await setup({ blocklist: b }).svc.start(wallet())).kind).toBe('OK');
   });
   it('screen-failed (two structurally different fakes): no send, hold', async () => {
-    for (const screening of [new ListScreen([addr(ADDR)]), new ScoreScreen(() => 95n), new ListScreen([], true), new ScoreScreen(() => -1n)]) {
+    for (const screening of [ListScreen([addr(ADDR)]), ScoreScreen(() => 95n), ListScreen([], true), ScoreScreen(() => -1n)]) {
       const t = setup({ screening });
       const r = await t.svc.start(wallet());
       expect(r.kind).toBe('REJECTED');
@@ -172,7 +163,7 @@ describe('STABLECOIN_WALLET payout', () => {
       t.payments.state = 'CONFIRMED';
       t.payments.override = o;
       expect((await t.svc.advance('p1'))?.status).toBe('FAILED');
-      expect(t.cases.at(-1)?.kind).toBe('CONFLICT');
+      expect(t.cases.at(-1)).toEqual({ payoutId: 'p1', kind: 'QUARANTINE', reason: 'PAYMENT_MISMATCH' });
     }
   });
   it('failed payment opens a case and is not ARRIVED', async () => {
@@ -182,13 +173,14 @@ describe('STABLECOIN_WALLET payout', () => {
     expect((await t.svc.advance('p1'))?.status).toBe('FAILED');
     expect(t.cases).toEqual([{ payoutId: 'p1', kind: 'PAYMENT_FAILED', reason: 'PAYMENT_FAILED' }]);
   });
-  it('payments rejection or ambiguity: never ARRIVED; ambiguity allows replay with the same key', async () => {
+  it('payments rejection or ambiguity: never ARRIVED; ambiguity is UNRESOLVED (never FAILED) with a case', async () => {
     const t = setup({ payments: { create: async () => rejected('X', 'x'), get: async () => rejected('NOT_FOUND', 'x') } });
     expect(await t.svc.start(wallet())).toMatchObject({ code: 'PAYMENT_REJECTED' });
     expect(t.svc.record('p1')?.status).toBe('FAILED');
     const t2 = setup({ payments: { create: async () => { throw new Error('boom'); }, get: async () => rejected('NOT_FOUND', 'x') } });
-    expect(await t2.svc.start(wallet())).toMatchObject({ code: 'PAYMENT_REJECTED' });
-    expect(t2.svc.record('p1')).toBeNull();
+    expect(await t2.svc.start(wallet())).toMatchObject({ code: 'PAYMENT_OUTCOME_UNKNOWN' });
+    expect(t2.svc.record('p1')).toMatchObject({ status: 'UNRESOLVED', code: 'PAYMENT_OUTCOME_UNKNOWN' });
+    expect(t2.cases).toEqual([{ payoutId: 'p1', kind: 'UNRESOLVED_SUBMIT', reason: 'PAYMENT_OUTCOME_UNKNOWN' }]);
   });
 });
 
@@ -231,7 +223,7 @@ describe('FIAT_BANK payout', () => {
     const f = { ...fiat(), currency: fiatCode('KES') };
     expect((await setup({ country: 'KE', currency: 'KES', legal: true }).svc.start(f)).kind).toBe('OK');
     expect((await setup({ country: 'KE', currency: 'KES', demo: true }).svc.start(f)).kind).toBe('OK');
-    expect(await setup({ country: 'KE', currency: 'KES', demo: true, chainId: 5042n }).svc.start(f)).toMatchObject({ code: 'CROSS_BORDER_DISABLED' });
+    expect(await setup({ country: 'KE', currency: 'KES', demo: true, chainId: 5042n, travelRule: { check: async () => 'READY' } }).svc.start(f)).toMatchObject({ code: 'CROSS_BORDER_DISABLED' });
   });
   it('unknown recipient and currency mismatch are refused before funding', async () => {
     const t = setup({ recipients: () => { throw new Error('x'); } });
@@ -245,10 +237,10 @@ describe('FIAT_BANK payout', () => {
     b.block(addr(SETTLE));
     const t = setup({ blocklist: b });
     expect(await t.svc.start(fiat())).toMatchObject({ code: 'BLOCKLISTED' });
-    const t2 = setup({ screening: new ScoreScreen(() => 99n) });
+    const t2 = setup({ screening: ScoreScreen(() => 99n) });
     expect(await t2.svc.start(fiat())).toMatchObject({ code: 'SCREENING_BLOCKED' });
     expect(t.payments.creates.length + t2.payments.creates.length).toBe(0);
-    expect(t.cases[0]?.kind).toBe('SCREEN_HOLD');
+    expect(t.cases[0]?.kind).toBe('QUARANTINE');
   });
   it('malformed settlement address is refused', async () => {
     const t = setup({ partnerSettlementAddress: 'nope' });
@@ -305,7 +297,8 @@ describe('FIAT_BANK payout', () => {
     const body = enc('[]');
     const r = await t.svc.handlePartnerCallback(body, { [FAKE_SIGNATURE_HEADER]: fakePartnerSign(SECRET, body) });
     expect(r).toMatchObject({ code: 'MALFORMED' });
-    expect(t.cases.at(-1)?.kind).toBe('UNKNOWN_EVENT');
+    expect(t.cases.at(-1)?.kind).toBe('QUARANTINE');
+    expect(t.cases.map((c) => c.reason)).toEqual(['UNKNOWN_PAYOUT', 'MALFORMED']);
     expect(t.svc.record('f1')?.status).toBe('PARTNER_PENDING');
   });
   it('funding payment failed: no partner payout', async () => {
@@ -323,6 +316,112 @@ describe('FIAT_BANK payout', () => {
     t2.payments.state = 'CONFIRMED';
     expect((await t2.svc.advance('f1'))?.status).toBe('FAILED');
     expect(t2.cases[0]?.kind).toBe('REFUND_DUE');
+  });
+});
+
+describe('pre-verification fixes (fail closed)', () => {
+  it('a stale or future-dated local blocklist copy fails closed: no send', async () => {
+    for (const clock of [() => 1n + 60_001n, () => 0n]) {
+      const t = setup({ clock });
+      expect(await t.svc.start(wallet())).toMatchObject({ code: 'SCREENING_UNAVAILABLE' });
+      expect(t.payments.creates).toHaveLength(0);
+      expect(t.svc.record('p1')?.status).toBe('HELD');
+    }
+    // exactly at the max age is still fresh
+    expect((await setup({ clock: () => 1n + 60_000n }).svc.start(wallet())).kind).toBe('OK');
+  });
+  it('configure or fail closed: the testnet travel-rule no-op off 5042002, a zero blocklist age', () => {
+    expect(() => setup({ chainId: 5042n })).toThrow(PayoutConfigError);
+    expect(() => setup({ blocklistMaxAgeMs: 0n })).toThrow(PayoutConfigError);
+    expect(() => setup({ chainId: 5042n, travelRule: { check: async () => 'READY' } })).not.toThrow();
+  });
+  it('PAID then a conflicting FAILED withdraws ARRIVED and opens a CONFLICT case', async () => {
+    const t = setup();
+    await t.svc.start(fiat());
+    t.payments.state = 'CONFIRMED';
+    await t.svc.advance('f1');
+    await t.svc.handlePartnerCallback(...cb('fake-t1', 'PAID', 'e1'));
+    expect(t.svc.record('f1')?.status).toBe('ARRIVED');
+    const r = await t.svc.handlePartnerCallback(...cb('fake-t1', 'FAILED', 'e2'));
+    expect(r).toMatchObject({ kind: 'REJECTED', code: 'CONFLICT' });
+    expect(t.svc.record('f1')).toMatchObject({ status: 'FAILED', code: 'PARTNER_CONFLICT' });
+    expect(t.cases).toContainEqual({ payoutId: 'f1', kind: 'CONFLICT', reason: 'SIGNAL_CONFLICT' });
+  });
+  it('the partner payout is bound to the funding tx WE read back (advance takes no caller hash)', async () => {
+    const t = setup();
+    const seen: Hex32[] = [];
+    const create = t.partner.createPayout.bind(t.partner);
+    t.partner.createPayout = async (k, req) => { seen.push(req.funding.txHash); return create(k, req); };
+    await t.svc.start(fiat());
+    t.payments.state = 'CONFIRMED';
+    await (t.svc.advance as (id: string, x: unknown) => Promise<unknown>)('f1', { txHash: '0x' + 'ff'.repeat(32) });
+    expect(seen).toEqual([TX]);
+  });
+  it('an unknown create outcome is UNRESOLVED; a retry re-screens and replays the SAME key; never refunded as FAILED', async () => {
+    const t = setup();
+    let fail = true;
+    const inner = t.payments.create.bind(t.payments);
+    t.payments.create = async (k, req) => { if (fail) throw new Error('timeout'); return inner(k, req); };
+    expect(await t.svc.start(wallet())).toMatchObject({ code: 'PAYMENT_OUTCOME_UNKNOWN' });
+    expect(t.svc.record('p1')?.status).toBe('UNRESOLVED');
+    fail = false;
+    const screening = ScoreScreen(() => 0n);
+    (t.deps as { screening: unknown }).screening = screening; // the service holds deps by reference
+    expect((await t.svc.start(wallet())).kind).toBe('OK');
+    expect(screening.calls).toBe(1n); // re-screened before the retry
+    expect(t.payments.creates).toHaveLength(1);
+    expect(t.payments.creates[0]?.key).toMatch(/^payout-send-[0-9a-f]{32}$/);
+    expect(t.svc.record('p1')?.status).toBe('SENT');
+  });
+  it('an UNRESOLVED retry refused by screening stays UNRESOLVED (money may have moved) and opens a QUARANTINE case', async () => {
+    const t = setup({ payments: { create: async () => ({ kind: 'AMBIGUOUS', cause: 'TIMEOUT' }) as const, get: async () => rejected('NOT_FOUND', 'x') } });
+    await t.svc.start(wallet());
+    const b = new SetBlocklist(1n);
+    b.block(addr(ADDR));
+    (t.deps as { blocklist: unknown }).blocklist = b; // the service holds deps by reference
+    expect(await t.svc.advance('p1')).toMatchObject({ status: 'UNRESOLVED' });
+    expect(t.cases).toEqual([
+      { payoutId: 'p1', kind: 'UNRESOLVED_SUBMIT', reason: 'PAYMENT_OUTCOME_UNKNOWN' },
+      { payoutId: 'p1', kind: 'QUARANTINE', reason: 'BLOCKLISTED' },
+    ]);
+  });
+  it('HELD replays as the same rejection, never OK', async () => {
+    const b = new SetBlocklist(1n);
+    b.block(addr(ADDR));
+    const t = setup({ blocklist: b });
+    await t.svc.start(wallet());
+    expect(await t.svc.start(wallet())).toMatchObject({ kind: 'REJECTED', code: 'BLOCKLISTED' });
+    expect(t.cases).toHaveLength(1);
+  });
+  it('a case whose open failed stays pending and is retried on the next call', async () => {
+    let down = true;
+    const opened: PayoutCase[] = [];
+    const b = new SetBlocklist(1n);
+    b.block(addr(ADDR));
+    const t = setup({ blocklist: b, cases: { open: async (c) => { if (down) throw new Error('x'); opened.push(c); } } });
+    await t.svc.start(wallet());
+    expect(t.svc.pendingCases()).toHaveLength(1);
+    down = false;
+    await t.svc.advance('p1');
+    expect(opened).toEqual([{ payoutId: 'p1', kind: 'QUARANTINE', reason: 'BLOCKLISTED' }]);
+    expect(t.svc.pendingCases()).toHaveLength(0);
+  });
+  it('unattributable authentic callbacks each open their own case (not one shared "unknown")', async () => {
+    const t = setup();
+    await t.svc.handlePartnerCallback(...cb('fake-a', 'PAID', 'e1'));
+    await t.svc.handlePartnerCallback(...cb('fake-b', 'PAID', 'e2'));
+    const quarantined = t.cases.filter((c) => c.kind === 'QUARANTINE');
+    expect(quarantined).toHaveLength(2);
+    expect(new Set(quarantined.map((c) => c.payoutId)).size).toBe(2);
+    expect(JSON.stringify(t.cases)).not.toContain('fake-a');
+  });
+  it('restart: state is lost fail closed; the same request replays the same key (one payment)', async () => {
+    const t = setup();
+    await t.svc.start(wallet());
+    const restarted = new PayoutService(t.deps);
+    expect(restarted.record('p1')).toBeNull();
+    expect((await restarted.start(wallet())).kind).toBe('OK');
+    expect(t.payments.creates).toHaveLength(1);
   });
 });
 

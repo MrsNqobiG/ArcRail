@@ -18,7 +18,7 @@ import type { TimelineStep } from './timeline.js';
 export interface AmountRecord {
   readonly code: string;
   readonly units: bigint;
-  readonly decimals: number;
+  readonly decimals: bigint;
 }
 
 /** Server-side journey record (the only source of amounts, wallet and methods). */
@@ -34,7 +34,7 @@ export interface JourneyRecord {
   readonly send: AmountRecord;
   readonly receive: AmountRecord;
   readonly receiverAddress: NetworkAddress | null;
-  readonly chainId: number;
+  readonly chainId: bigint;
 }
 
 export interface JourneyReader {
@@ -42,13 +42,17 @@ export interface JourneyReader {
 }
 
 /** Integer bigint to a decimal string. Throws on a bad scale or a negative value. */
-export function formatUnits(units: bigint, decimals: number): string {
-  if (typeof units !== 'bigint' || units < 0n || !Number.isInteger(decimals) || decimals < 0 || decimals > 36) {
+export function formatUnits(units: bigint, decimals: bigint): string {
+  if (typeof units !== 'bigint' || units < 0n || typeof decimals !== 'bigint' || decimals < 0n || decimals > 36n) {
     throw new RangeError('bad amount');
   }
-  if (decimals === 0) return units.toString();
-  const s = units.toString().padStart(decimals + 1, '0');
-  return `${s.slice(0, -decimals)}.${s.slice(-decimals)}`;
+  const scale = 10n ** decimals;
+  const whole = units / scale;
+  const frac = units % scale;
+  if (decimals === 0n) return whole.toString();
+  let digits = '';
+  for (let k = 1n; k <= decimals; k += 1n) digits += ((frac / 10n ** (decimals - k)) % 10n).toString();
+  return `${whole.toString()}.${digits}`;
 }
 
 export interface JourneyView {
@@ -120,7 +124,7 @@ export async function notifySteps(
   rec: JourneyRecord,
   view: JourneyView,
 ): Promise<readonly { readonly step: string; readonly delivered: boolean }[]> {
-  const out: { step: string; delivered: boolean }[] = [];
+  let out: readonly { readonly step: string; readonly delivered: boolean }[] = [];
   for (const s of view.timeline) {
     if (s.state !== 'DONE') continue;
     let delivered = false;
@@ -136,7 +140,7 @@ export async function notifySteps(
     } catch {
       delivered = false;
     }
-    out.push({ step: s.step, delivered });
+    out = [...out, { step: s.step, delivered }];
   }
   return out;
 }

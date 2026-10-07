@@ -18,6 +18,13 @@ Status: Phase 2 skeleton. Most paths hold interfaces and `not implemented: <unit
 
 | Path | Item | Unit |
 |---|---|---|
+| `src/payments/keys.ts` | 7 | PAY deterministic request ids and ledger and gas idempotency keys (NOVA_ARC_DESIGN §10.2) |
+| `src/payments/postings.ts` | 10 | PAY D1 postings P1, P2, P3, P4 (gas dust included) and P6 built from the server-side record (NOVA_ARC_DESIGN §9) |
+| `src/payments/reconcile.ts` | 9 | PAY wallet residual (chain wei vs ledger, exact) and open clearing check (NOVA_ARC_DESIGN §8.4) |
+| `src/payments/gateway-store.ts` | 4 | PAY adapters from PaymentStorePort and NetworkAdapter to the signing gateway's store and rail ports |
+| `src/payments/orchestrator.ts` | 7 | PAY D1 payment orchestrator: create, approve, submit, confirm, release; idempotent, fail closed (NOVA_ARC_DESIGN §10.1, §12, §13) |
+| `src/http/amount.ts` | 1 | PAY HTTP edge: decimal string to integer base units, no float, no rounding |
+| `src/http/payments.ts` | 7 | PAY framework-agnostic handlers: create a D1 payment and GET /payments/:id (status plus stage; amounts as decimal strings) |
 | `src/amounts/index.ts` | 1 | U1 amounts and the conversion module |
 | `src/ingestion/index.ts` | 2 | U4 credit decision logic |
 | `src/inbound/index.ts` | 3 | U6 inbound flow |
@@ -70,6 +77,9 @@ Status: Phase 2 skeleton. Most paths hold interfaces and `not implemented: <unit
 | `src/ops/audit.ts` | 7 | OPS append-only hash-chained audit of every case opening and every action, refused or applied |
 | `src/ops/queue.ts` | 7 | OPS case queue: two distinct authenticated humans, consent bound to the option, refund and retry only after a D-6 proof, P6 posted once and refunds and write-offs capped per payment, each approver confirms the option digest, ledger read-back per account must match before a case closes, UNMATCHED_FILL closes by ADOPT_FILL or REVERSE_FILL (P12) and blocks REQUOTE, gate on CF-31, amounts only from the server-side option |
 | `src/journey/quote/fill.ts` | 7 | JQUOTE fill desk (design delta 1 D-1): one pricing code per (payment, quote request) key, rate lock = the code expiresAt, requote guard (no second code while an outcome is unknown, a conversion is booked or a refused booked fill is unresolved), fill-event authenticity then dedupe on `fill:<codeId>` (SIGNAL_CONFLICT quarantines), checks 1-5 with ledger read-back, refused booked fills kept and sent to an OPS requote case, fill timeout, ADOPT and REVERSE bookkeeping |
+| `src/journey/timeline/facts.ts` | 7 | JTIME licensing facts: closed fact kinds, allowed source per kind, system-emitter and confirmed checks, bigint chain units (a malformed fact licenses nothing) |
+| `src/journey/timeline/timeline.ts` | 7 | JTIME journey timeline: steps per pay-in x payout pair, each DONE step carries its licensing fact, ARRIVED only by the payout final confirmation, duplicate facts collapse to one step |
+| `src/journey/timeline/handler.ts` | 7 | JTIME GET /journeys/:id handler: bigint units to decimal strings, status and stage from src/status, owner-bound lookup, step notifier that never writes money state |
 
 ## Named parts
 
@@ -77,6 +87,13 @@ Every named part of every item maps to at least one listed path and an anchor sy
 
 | Item | Named part | Path | Anchor |
 |---|---|---|---|
+| 7 | PAY D1 payment orchestrator | `src/payments/orchestrator.ts` | `PaymentOrchestrator` |
+| 10 | PAY D1 postings (P1, P2, P3, P4, P6) | `src/payments/postings.ts` | `p1Reserve` |
+| 7 | PAY deterministic request ids | `src/payments/keys.ts` | `deriveRequestIds` |
+| 9 | PAY wallet residual | `src/payments/reconcile.ts` | `walletResidual` |
+| 4 | PAY gateway store adapter | `src/payments/gateway-store.ts` | `gatewayStoreFor` |
+| 1 | PAY HTTP decimal-string amount parsing | `src/http/amount.ts` | `parseDecimalAmount` |
+| 7 | PAY HTTP create and get handlers | `src/http/payments.ts` | `createPaymentHandler` |
 | 1 | branded amount types | `src/amounts/index.ts` | `CbsMinor` |
 | 1 | conversion module (CONTRACT §6) | `src/amounts/index.ts` | `nativeWeiToCbsMinor` |
 | 2 | classification (CONTRACT §5.0) | `src/ingestion/index.ts` | `LogClass` |
@@ -152,6 +169,10 @@ Every named part of every item maps to at least one listed path and an anchor sy
 | 7 | OPS append-only hash-chained audit | `src/ops/audit.ts` | `AuditLog` |
 | 7 | OPS operator case queue and actions | `src/ops/queue.ts` | `OpsQueue` |
 | 7 | JQUOTE D-1 fill desk: code requests, fill checks 1-5, dedupe and requote cases | `src/journey/quote/fill.ts` | `FillDesk` |
+| 7 | JTIME fact licensing check | `src/journey/timeline/facts.ts` | `isWellFormedFact` |
+| 7 | JTIME timeline builder | `src/journey/timeline/timeline.ts` | `buildTimeline` |
+| 7 | JTIME decimal-string edge formatter | `src/journey/timeline/handler.ts` | `formatUnits` |
+| 7 | JTIME journey handler | `src/journey/timeline/handler.ts` | `createJourneyHandler` |
 
 ## Excluded from the import-graph closure
 
@@ -168,9 +189,11 @@ RUBRIC MC-01 "grep for float types": on a listed path, the `number` type may app
 
 | Path | Declaration | Meaning |
 |---|---|---|
+| `src/http/payments.ts` | `HttpStatus` | HTTP response status codes (200, 201, 400, ...) as a brand. Not an amount. |
 | `src/amounts/index.ts` | `CbsPrecision` | The CBS precision p, in decimal places (CONTRACT §1.1, Q-C4), as a brand. Not an amount. Every `p: CbsPrecision` parameter of the conversion functions is covered by the brand. |
 | `src/amounts/index.ts` | `cbsPrecision(0)` | The raw p argument of the checked constructor `cbsPrecision`. |
 | `src/amounts/index.ts` | `cbsPrecision` | The checked constructor of p. It returns `CbsPrecision`. |
 | `src/signer/index.ts` | `Eip1559ValueSend.chainId` | The EIP-155 chain-ID pin, 5042002 (C-01, C-56). |
 | `src/chain/client/index.ts` | `ChainReader.chainId` | The chain ID of the reader, 5042002 (C-01). |
 | `src/chain/client/index.ts` | `ReadResult.code` | A JSON-RPC error code, for example −32012, −32014 or −32602 (C-40, C-41, C-42). |
+| `src/journey/timeline/handler.ts` | `HttpResponse.status` | HTTP response status code of the framework-agnostic handler (200, 400, 401, 404, 405, 500). Not an amount. |

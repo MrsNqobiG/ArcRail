@@ -209,6 +209,7 @@ describe('codeKey and caseReasonFor', () => {
       expect(fillDigest({ ...f, ...over })).not.toBe(d);
     }
     expect(fillDigest({ kind: 'REJECTED', codeId: 'c' })).toBe(lpDigestHex(['fx-fill-v1', 'REJECTED', 'c']));
+    expect(d).toBe(lpDigestHex(['fx-fill-v1', 'FILLED', 'c', 'ZAR', 'USDC', '9', '5000', '5000/9', '0', 'je', '1']));
     expect(fillDigest({ kind: 'EXPIRED', codeId: 'c' })).not.toBe(fillDigest({ kind: 'REJECTED', codeId: 'c' }));
   });
 });
@@ -392,7 +393,8 @@ describe.each(RIGS)('FillDesk fills (D-1 checks 1-5): %s', (_n, make) => {
     const r = make();
     const { desk, codeId } = await opened(r);
     const d = await desk.receive(r.fill(codeId, { filledAtMs: T0, event: { rate: { numerator: 550n, denominator: 1n }, toAmount: cbsMinor(54_999_450n) } }));
-    expect(d).toMatchObject({ kind: 'UNMATCHED_FILL', refusal: 'AMOUNT_MISMATCH', adoptable: false });
+    expect(d).toMatchObject({ kind: 'UNMATCHED_FILL', refusal: 'AMOUNT_MISMATCH', detail: 'the fill is not the code quote', adoptable: false });
+    expect(desk.codeStatus(codeId)).toEqual({ state: 'UNMATCHED', resolution: 'OPEN', reversalRef: null });
     expect(r.cases.requests[0]).toMatchObject({ kind: 'UNMATCHED_FILL', reason: 'FILL_TERMS_MISMATCH', bookedEntryRef: `je-${codeId}`, evidenceRefs: [`fill:${codeId}`, `booked:je-${codeId}`, 'refusal:AMOUNT_MISMATCH'] });
     const s = make();
     const o = await opened(s);
@@ -655,8 +657,70 @@ describe.each(RIGS)('FillDesk fill timeout, requote guard, late fills, ADOPT and
     const raw2 = s.fill(b.quote.quoteId, { filledAtMs: T0 });
     s.faults.arm('getBookedEntry', 'BEFORE_COMMIT', 'TIMEOUT');
     const both = await Promise.all([d2.receive(raw2), d2.receive(raw2)]);
-    expect(both.map(kindOf)).toEqual(['RETRY', 'RETRY']);
+    expect(both).toEqual([
+      { kind: 'RETRY', detail: 'the booked entry read-back outcome is unknown' },
+      { kind: 'RETRY', detail: 'the booked entry read-back outcome is unknown' },
+    ]);
     expect(await d2.receive(raw2)).toMatchObject({ kind: 'FILL_ACCEPTED', duplicate: false });
+  });
+
+  it('code states: OPEN, FILLED, NOT_FILLED, UNUSABLE, SUPERSEDED; an unknown code has none; a finished code is never timed out', async () => {
+    const r = make();
+    const desk = r.desk();
+    expect(desk.codeStatus('nope')).toBeNull();
+    const a = (await lockOk(desk.lockerFor(binding()))).value.quote.quoteId;
+    expect(desk.codeStatus(a)).toEqual({ state: 'OPEN', resolution: null, reversalRef: null });
+    await desk.receive(r.fill(a, { filledAtMs: T0 }));
+    expect(desk.codeStatus(a)).toEqual({ state: 'FILLED', resolution: null, reversalRef: null });
+    const b = (await lockOk(desk.lockerFor(binding(PAY2)))).value.quote.quoteId;
+    await desk.receive(r.close(b, 'EXPIRED'));
+    expect(desk.codeStatus(b)?.state).toBe('NOT_FILLED');
+    r.clock.advance(TTL + TIMEOUT + 1n);
+    expect(await desk.sweepTimeouts()).toEqual([]);
+  });
+
+  it('an unusable requote does not supersede the open code; a usable one does, and leaves other states alone', async () => {
+    const r = make();
+    const bad = r.desk({}, { readExpiry: (x) => (x === `ms:${EXP}` ? EXP : null) });
+    const a = (await lockOk(bad.lockerFor(binding()), k1)).value.quote.quoteId;
+    r.clock.advance(TTL + TIMEOUT);
+    // The second code expires later, so this desk cannot read it: UNUSABLE, and code A stays OPEN.
+    expect(await bad.lockerFor(binding()).lockRate(k2, req)).toMatchObject({ kind: 'REJECTED', code: 'BAD_EXPIRY' });
+    expect(bad.codeStatus(a)?.state).toBe('OPEN');
+    expect(await bad.receive(r.fill(a, { filledAtMs: EXP - 1n }))).toMatchObject({ kind: 'FILL_ACCEPTED' });
+    // A usable requote supersedes only OPEN codes: an UNUSABLE one stays UNUSABLE.
+    const s = make();
+    const d2 = s.desk({}, { readExpiry: (x) => (x === `ms:${EXP}` ? null : msExpiryReader(x)) });
+    expect(await d2.lockerFor(binding()).lockRate(k1, req)).toMatchObject({ code: 'BAD_EXPIRY' });
+    s.clock.advance(1n);
+    const c = (await lockOk(d2.lockerFor(binding()), k2)).value.quote.quoteId;
+    expect(d2.codeStatus(c)?.state).toBe('OPEN');
+    const first = await s.fx.getPricingCode(codeKey(PAY1, k1), req);
+    const u = first.kind === 'OK' ? first.value.codeId : '';
+    expect(d2.codeStatus(u)?.state).toBe('UNUSABLE');
+    expect(await d2.receive(s.fill(u, { filledAtMs: T0 }))).toMatchObject({ refusal: 'CODE_NOT_OPEN', detail: `code ${u} is UNUSABLE` });
+  });
+
+  it('REVERSE of a lone refused fill releases the requote guard; ADOPT leaves other codes in their states', async () => {
+    const r = make();
+    const desk = r.desk();
+    const a = (await lockOk(desk.lockerFor(binding()), k1)).value.quote.quoteId;
+    await desk.receive(r.fill(a, { filledAtMs: EXP }));
+    expect(await desk.lockerFor(binding()).lockRate(k2, req)).toMatchObject({ code: 'FILL_OUTSTANDING' });
+    expect(desk.recordReversal(a, 'bad ref')).toEqual({ kind: 'REJECTED', code: 'NOT_FOUND', detail: `no unresolved booked fill on code ${a}, or no reversal reference` });
+    expect(desk.recordReversal(a, 'p12-journal-9')).toMatchObject({ kind: 'OK' });
+    expect(desk.codeStatus(a)).toEqual({ state: 'UNMATCHED', resolution: 'REVERSED', reversalRef: 'p12-journal-9' });
+    expect((await desk.lockerFor(binding()).lockRate(k2, req)).kind).toBe('OK');
+    // ADOPT: a REJECTED code stays NOT_FILLED, the adopted code becomes the booked conversion.
+    const s = make();
+    const d2 = s.desk();
+    const x = (await lockOk(d2.lockerFor(binding()), k1)).value.quote.quoteId;
+    await d2.receive(s.close(x, 'REJECTED'));
+    const y = (await lockOk(d2.lockerFor(binding()), k2)).value.quote.quoteId;
+    await d2.receive(s.fill(y, { filledAtMs: EXP + 1n }));
+    expect(d2.adopt(y)).toMatchObject({ kind: 'OK' });
+    expect(d2.codeStatus(y)).toEqual({ state: 'FILLED', resolution: 'ADOPTED', reversalRef: null });
+    expect(d2.codeStatus(x)?.state).toBe('NOT_FILLED');
   });
 
   it('awaitFill takes the event Nova pushes for the code and decides it', async () => {

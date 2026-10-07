@@ -26,8 +26,11 @@ export type Principal =
   /** Nova staff roles may read any payment (A-35); they never create one here. */
   | { readonly kind: 'STAFF' };
 
+/** HTTP status codes: not money. */
+export type HttpStatus = 200 | 201 | 400 | 403 | 404 | 409 | 422 | 500 | 503;
+
 export interface HttpResponse {
-  readonly status: 200 | 201 | 400 | 403 | 404 | 409 | 422 | 500 | 503;
+  readonly status: HttpStatus;
   readonly body: unknown;
 }
 
@@ -39,9 +42,14 @@ export interface PaymentsHttpDeps {
   readonly explorerTxUrl?: (txHash: string) => string | null;
 }
 
-const fail = (status: HttpResponse['status'], code: string, message: string): HttpResponse => ({ status, body: { error: { code, message } } });
+function createdStatus(replayed: boolean): HttpStatus {
+  if (replayed) return 200;
+  return 201;
+}
 
-const REFUSAL_STATUS: Readonly<Record<CreateRefusal, HttpResponse['status']>> = {
+const fail = (status: HttpStatus, code: string, message: string): HttpResponse => ({ status, body: { error: { code, message } } });
+
+const REFUSAL_STATUS: Readonly<Record<CreateRefusal, HttpStatus>> = {
   BENEFICIARY_UNKNOWN: 404,
   BENEFICIARY_INACTIVE: 422,
   NO_PAYOUT_PREFERENCE: 422,
@@ -59,6 +67,8 @@ function text(m: CbsMinor, p: CbsPrecision): string {
   return d.text;
 }
 
+// TODO(§10.5): `createdAt` and `updatedAt` are in the GET shape, but PaymentRecord (§7.3, PORTS unit) carries no
+// timestamps yet; they are added here when it does. Nothing money-bearing depends on them.
 export function paymentView(rec: PaymentRecord, p: CbsPrecision, explorer: PaymentsHttpDeps['explorerTxUrl']): unknown {
   return {
     id: rec.paymentId,
@@ -104,7 +114,7 @@ export async function createPaymentHandler(
     if (out.kind === 'RETRY') return fail(503, 'TRY_AGAIN', 'outcome unknown; repeat the same request with the same Idempotency-Key');
     if (out.kind === 'REFUSED') return fail(REFUSAL_STATUS[out.code], out.code, out.detail);
     const advanced = await deps.orchestrator.advance(out.record.paymentId);
-    return { status: out.replayed ? 200 : 201, body: paymentView(advanced.record, deps.precision, deps.explorerTxUrl) };
+    return { status: createdStatus(out.replayed), body: paymentView(advanced.record, deps.precision, deps.explorerTxUrl) };
   } catch (e) {
     if (e instanceof PaymentFault) return fail(500, 'PAYMENT_FAULT', e.code);
     throw e;
@@ -118,5 +128,11 @@ export async function getPaymentHandler(deps: PaymentsHttpDeps, req: { readonly 
   const rec = await deps.read(req.id as PaymentId);
   if (rec === 'UNAVAILABLE') return fail(503, 'TRY_AGAIN', 'store unavailable');
   if (rec === null || (req.principal.kind === 'PAYER' && rec.payer !== req.principal.owner)) return fail(404, 'NOT_FOUND', 'no such payment');
-  return { status: 200, body: paymentView(rec, deps.precision, deps.explorerTxUrl) };
+  try {
+    return { status: 200, body: paymentView(rec, deps.precision, deps.explorerTxUrl) };
+  } catch (e) {
+    // An amount that cannot be shown exactly is never rounded: answer 500, not a wrong number.
+    if (e instanceof PaymentFault) return fail(500, 'PAYMENT_FAULT', e.code);
+    throw e;
+  }
 }

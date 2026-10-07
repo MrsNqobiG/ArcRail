@@ -136,11 +136,22 @@ function strLen(s: string): bigint {
   return n;
 }
 
+/** The items of any iterable object, or null for anything else (a request may arrive malformed); it never throws. */
+function listOf(xs: unknown): readonly unknown[] | null {
+  if (typeof xs !== 'object' || xs === null) return null;
+  try {
+    return [...(xs as Iterable<unknown>)];
+  } catch {
+    return null;
+  }
+}
+
 function evidenceOk(refs: readonly string[]): boolean {
-  if (!Array.isArray(refs)) return false;
+  const list = listOf(refs);
+  if (list === null) return false;
   let n = 0n;
-  for (const r of refs) {
-    if (!isRef(r)) return false;
+  for (const r of list) {
+    if (typeof r !== 'string' || !isRef(r)) return false;
     n += 1n;
   }
   return n > 0n;
@@ -148,7 +159,7 @@ function evidenceOk(refs: readonly string[]): boolean {
 
 /** The ids as strings, for the audit record, whatever shape arrived. */
 function textsOf(xs: readonly unknown[]): string[] {
-  return Array.isArray(xs) ? xs.map(String) : [];
+  return (listOf(xs) ?? []).map(String);
 }
 
 function notSentOk(f: PaymentFacts): boolean {
@@ -189,7 +200,7 @@ export class OpsQueue {
   async openCase(input: OpenCaseInput): Promise<PortResult<CaseRecord, OpsCode>> {
     const bad = this.inputProblem(input);
     if (bad !== null) return rejected(bad[0], bad[1]);
-    const options: OptionRecord[] = input.options.map((o) => ({ ...o, digest: optionDigest(o) }));
+    const options: OptionRecord[] = (listOf(input.options) as readonly CaseOption[]).map((o) => ({ ...o, digest: optionDigest(o) }));
     const caseId = deriveCaseId(input.kind, input.subject);
     const bookedEntryRef = input.bookedEntryRef ?? null;
     const exposure = input.exposure ?? null;
@@ -285,11 +296,12 @@ export class OpsQueue {
   }
 
   private optionsProblem(i: OpenCaseInput, x: CaseExposure | null): [OpsCode, string] | null {
-    if (!Array.isArray(i.options) || i.options.length === 0) return ['OPTION_INVALID', 'at least one option is required'];
+    const opts = listOf(i.options) as readonly CaseOption[] | null;
+    if (opts === null || opts.length === 0) return ['OPTION_INVALID', 'at least one option is required'];
     const seen = new Set<string>();
     const a = i.amounts;
     const loss = this.d.config.lossAccount;
-    for (const o of i.options) {
+    for (const o of opts) {
       if (!ALLOWED_ACTIONS[i.kind].includes(o.action)) return ['ACTION_NOT_ALLOWED', `${o.action} is not an action of a ${i.kind} case`];
       const p = optionProblem(o);
       if (p !== null) return ['OPTION_INVALID', p];
@@ -304,7 +316,7 @@ export class OpsQueue {
       const over = this.boundProblem(o, a, x, loss);
       if (over !== null) return ['OPTION_INVALID', over];
     }
-    if (i.kind === 'UNMATCHED_FILL' && !(['ADOPT_FILL', 'REVERSE_FILL'] as const).every((act) => i.options.some((o) => o.action === act))) {
+    if (i.kind === 'UNMATCHED_FILL' && !(['ADOPT_FILL', 'REVERSE_FILL'] as const).every((act) => opts.some((o) => o.action === act))) {
       return ['OPTION_INVALID', 'an UNMATCHED_FILL case needs both an ADOPT_FILL and a REVERSE_FILL option'];
     }
     return null;
@@ -352,7 +364,8 @@ export class OpsQueue {
     if (staff.kind === 'BAD') return refuse(staff.code, staff.detail);
     actors = staff.ids;
     const d = req.confirmedDigests;
-    if (!Array.isArray(d) || d.length !== 2 || d[0] !== opt.digest || d[1] !== opt.digest) {
+    const digests = listOf(d);
+    if (digests === null || digests.length !== 2 || digests[0] !== opt.digest || digests[1] !== opt.digest) {
       return refuse('DIGEST_NOT_CONFIRMED', 'each approver must confirm the digest of the exact option');
     }
     if (typeof req.reason !== 'string' || req.reason.trim() === '' || strLen(req.reason) > REASON_MAX) return refuse('REASON_INVALID', 'a reason of 1 to 500 characters is required');
@@ -367,7 +380,8 @@ export class OpsQueue {
 
   /** Canonical, authenticated and distinct (D-2 "two distinct authenticated staff identities"). */
   private async staffProblem(req: OpsActionRequest): Promise<{ kind: 'OK'; ids: [string, string] } | { kind: 'BAD'; code: OpsCode; detail: string }> {
-    const a = Array.isArray(req.approvers) && req.approvers.length === 2 ? req.approvers : null;
+    const list = listOf(req.approvers);
+    const a = list !== null && list.length === 2 ? list : null;
     if (a === null || typeof a[0] !== 'string' || typeof a[1] !== 'string') return { kind: 'BAD', code: 'APPROVER_UNAUTHENTICATED', detail: 'exactly two approvers are required' };
     const first = await this.d.staff.canonical(a[0]);
     const second = await this.d.staff.canonical(a[1]);
@@ -474,7 +488,8 @@ export class OpsQueue {
     if (p.debits !== p.credits || p.debits !== debitTotal(j.legs)) return 'totals';
     const want = legKeys(j.legs);
     const got = legKeys(p.lines);
-    return want.length === got.length && want.every((k, n) => k === got[n]) ? null : 'lines';
+    // legs hold no whitespace (isRef), so a newline join is an unambiguous list comparison
+    return want.join('\n') === got.join('\n') ? null : 'lines';
   }
 
   private async run(

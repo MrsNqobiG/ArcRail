@@ -53,11 +53,15 @@ export interface TimelineContext {
   /** Receiver wallet for a STABLECOIN_WALLET payout, from the server-side record. */
   readonly receiverAddress: NetworkAddress | null;
   /** Expected Arc chain id (server side). */
-  readonly chainId: number;
+  readonly chainId: bigint;
+}
+
+function before(a: Fact, b: Fact): boolean {
+  return a.occurredAt === b.occurredAt ? a.factId < b.factId : a.occurredAt < b.occurredAt;
 }
 
 function earliest(facts: readonly Fact[]): Fact | undefined {
-  return [...facts].sort((a, b) => (a.occurredAt === b.occurredAt ? (a.factId < b.factId ? -1 : 1) : a.occurredAt < b.occurredAt ? -1 : 1))[0];
+  return facts.reduce<Fact | undefined>((best, f) => (best === undefined || before(f, best) ? f : best), undefined);
 }
 
 function licenses(step: StepKind, f: Fact, ctx: TimelineContext): boolean {

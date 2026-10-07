@@ -20,14 +20,14 @@ export interface SentEmail {
 export class EmailNotifier implements Notifier {
   readonly outbox: SentEmail[] = [];
   private readonly byKey = new Map<string, string>();
-  failNext = 0;
+  failNext = 0n;
   constructor(private readonly directory: ReadonlyMap<string, string>) {}
 
   send(n: Notification): Promise<DeliveryResult> {
     const prior = this.byKey.get(n.key);
     if (prior !== undefined) return Promise.resolve({ kind: 'SENT', providerRef: prior, replayed: true });
-    if (this.failNext > 0) {
-      this.failNext -= 1;
+    if (this.failNext > 0n) {
+      this.failNext -= 1n;
       return Promise.resolve({ kind: 'FAILED', retryable: true });
     }
     const to = this.directory.get(n.recipientRef);
@@ -44,13 +44,13 @@ export interface WebhookPost {
   readonly url: string;
   readonly body: string;
   readonly signature: string;
-  readonly attempt: number;
+  readonly attempt: bigint;
 }
 
 export class WebhookNotifier implements Notifier {
   readonly posts: WebhookPost[] = [];
   private readonly delivered = new Map<string, string>();
-  private readonly attempts = new Map<string, number>();
+  private readonly attempts = new Map<string, bigint>();
   /** Status codes returned by the endpoint, consumed in order; empty means 200. */
   responses: number[] = [];
   /** When true the transport throws (timeout). */
@@ -60,7 +60,7 @@ export class WebhookNotifier implements Notifier {
   send(n: Notification): Promise<DeliveryResult> {
     const prior = this.delivered.get(n.key);
     if (prior !== undefined) return Promise.resolve({ kind: 'SENT', providerRef: prior, replayed: true });
-    const attempt = (this.attempts.get(n.key) ?? 0) + 1;
+    const attempt = (this.attempts.get(n.key) ?? 0n) + 1n;
     this.attempts.set(n.key, attempt);
     if (this.throwNext) {
       this.throwNext = false;

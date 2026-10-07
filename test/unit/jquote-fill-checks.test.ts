@@ -86,6 +86,10 @@ describe('quoteAtCodeRate: whole lots of the code rate as given, U1 add/subtract
     expect(quoteAtCodeRate(from(MAX), code(1n, MAX + 1n), P2, P6)).toBeNull();
     expect(quoteAtCodeRate(from(MAX), code(1n, MAX), P2, P6)).toMatchObject({ to: { amount: 1n }, remainder: 0n });
     expect(quoteAtCodeRate(from(5n), code(MAX, 1n), P2, P6)).toBeNull();
+    // The bounds are inclusive: a rate term of exactly CBS_MINOR_MAX, and a result of exactly CBS_MINOR_MAX, are representable.
+    expect(quoteAtCodeRate(from(1n), code(MAX, 1n), P2, P6)).toMatchObject({ to: { amount: MAX } });
+    expect(quoteAtCodeRate(from(7n), code(MAX / 7n, 1n), P2, P6)).toMatchObject({ to: { amount: MAX }, remainder: 0n });
+    expect(quoteAtCodeRate(to(7n), code(1n, MAX / 7n), P2, P6)).toMatchObject({ from: { amount: MAX } });
   });
 
   it('refuses a result that would pass CBS_MINOR_MAX (doubling or summing), never throws', () => {

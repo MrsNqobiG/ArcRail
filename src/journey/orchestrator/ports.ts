@@ -9,8 +9,8 @@
  * a client.
  */
 import type { JourneyQuote } from '../quote/compose.js';
-import type { CaseKind } from '../../ops/types.js';
-import type { Hex32, NovaOwnerRef, PaymentId } from '../../nova-ports/ids.js';
+import type { CaseKind, CaseRecord } from '../../ops/types.js';
+import type { Hex32, NovaOwnerRef, PaymentId, PortResult } from '../../nova-ports/ids.js';
 
 /** One payment of one journey. `retryOf` links a retry (a new payment) to the one it replaces. */
 export interface JourneyOrder {
@@ -25,7 +25,8 @@ export type OrchPayInResult =
   | { readonly kind: 'PENDING' }
   | { readonly kind: 'CONFIRMED'; readonly amount: bigint; readonly evidenceRef: string }
   | { readonly kind: 'EXPIRED' }
-  | { readonly kind: 'HELD'; readonly reason: string; readonly caseId: string | null }
+  /** `caseKind` is the kind JPAYIN already opened (when known); the orchestrator then never re-derives it. */
+  | { readonly kind: 'HELD'; readonly reason: string; readonly caseId: string | null; readonly caseKind?: CaseKind }
   | { readonly kind: 'FAILED_CLOSED'; readonly detail: string };
 
 /** FIAT and STABLECOIN_DEPOSIT pay-ins (JPAYIN). A STABLECOIN_BALANCE journey has none: the balance is reserved. */
@@ -46,11 +47,12 @@ export interface FundsPort {
 export type ConvertResult =
   | { readonly kind: 'PENDING' }
   | { readonly kind: 'FILLED'; readonly toAmount: bigint; readonly bookedEntryRef: string }
-  | { readonly kind: 'REJECTED' }
-  | { readonly kind: 'EXPIRED' }
-  | { readonly kind: 'REQUOTE'; readonly cause: 'RATE_EXPIRED' | 'RATE_CHANGED'; readonly detail: string }
-  | { readonly kind: 'UNMATCHED_FILL'; readonly reason: 'FILL_AFTER_EXPIRY' | 'FILL_MISPOSTED' | 'FILL_TERMS_MISMATCH' }
-  | { readonly kind: 'FILL_TIMEOUT' }
+  /** The hold results may carry the case the fill desk already opened (`caseId`), so no second case is opened. */
+  | { readonly kind: 'REJECTED'; readonly caseId?: string | null }
+  | { readonly kind: 'EXPIRED'; readonly caseId?: string | null }
+  | { readonly kind: 'REQUOTE'; readonly cause: 'RATE_EXPIRED' | 'RATE_CHANGED'; readonly detail: string; readonly caseId?: string | null }
+  | { readonly kind: 'UNMATCHED_FILL'; readonly reason: 'FILL_AFTER_EXPIRY' | 'FILL_MISPOSTED' | 'FILL_TERMS_MISMATCH'; readonly caseId?: string | null }
+  | { readonly kind: 'FILL_TIMEOUT'; readonly caseId?: string | null }
   | { readonly kind: 'UNAVAILABLE'; readonly detail: string };
 export interface ConversionStep {
   convert(order: JourneyOrder, nowMs: bigint): Promise<ConvertResult>;
@@ -88,4 +90,12 @@ export interface CasePort {
     readonly clientUid: NovaOwnerRef;
     readonly evidenceRefs: readonly string[];
   }): Promise<{ readonly caseId: string | null }>;
+}
+
+/**
+ * Reads an operator decision back from the OPS case store (structurally `Pick<OpsQueue, 'getCase'>`).
+ * The orchestrator never takes a decision from a caller: it resumes only on a CLOSED case it can read.
+ */
+export interface DecisionPort {
+  getCase(caseId: string): Promise<PortResult<CaseRecord, 'NOT_FOUND'>>;
 }

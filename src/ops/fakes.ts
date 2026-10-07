@@ -333,7 +333,9 @@ export class SeqMapAuditStore implements AuditStorePort {
     return ok(this.m.get(BigInt(this.m.size)) ?? null, false);
   }
   async all(): Promise<PortResult<readonly AuditEntry[], never>> {
-    return ok([...this.m.keys()].sort((x, y) => (x < y ? -1 : 1)).map((k) => this.m.get(k) as AuditEntry), false);
+    const out: AuditEntry[] = [];
+    for (let i = 1n; i <= BigInt(this.m.size); i += 1n) out.push(this.m.get(i) as AuditEntry);
+    return ok(out, false);
   }
 }
 

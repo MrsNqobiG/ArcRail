@@ -26,7 +26,8 @@ import { MapWalletRegistry } from '../../src/nova-ports/fakes/wallet-fakes.js';
 import { beneficiaryRef, idempotencyKey, ledgerAssetCode, novaAccountRef, novaOwnerRef, walletRef } from '../../src/nova-ports/ids.js';
 import type { Hex32, NetworkAddress, PaymentId } from '../../src/nova-ports/ids.js';
 import type { LedgerAccount } from '../../src/nova-ports/ledger.js';
-import { arcLeg } from '../../src/nova-ports/payment-store.js';
+import { arcLeg, deriveCaseId } from '../../src/nova-ports/payment-store.js';
+import type { CaseKind } from '../../src/nova-ports/payment-store.js';
 import {
   CLEARING,
   FEE_INCOME,
@@ -85,7 +86,7 @@ interface WorldOpts {
 async function world(opts: WorldOpts = {}) {
   const c = credentials();
   const sim = new DfnsSimulator(c.token, c.credId, c.check);
-  sim.addWallet();
+  const walletRec = sim.addWallet();
   const dfns = new DfnsClient({ baseUrl: 'https://api.dfns.io', userAgent: 'nova-arc-rail/test', listPageLimit: 50n, maxListPages: 4n }, sim, c.creds);
 
   const registry = new MapWalletRegistry();
@@ -103,7 +104,9 @@ async function world(opts: WorldOpts = {}) {
   const hot = walletAccount(hotRef);
   const accounts: LedgerAccount[] = [customerAccount(PAYER_ACCT), CLEARING, hot, FEE_INCOME, GAS_EXPENSE];
   const payerOpening = opts.payerOpening ?? OPENING;
+  const faults = new FaultPlan();
   const ledger = new MapLedger({
+    faults,
     assets: [{ asset: USDC, precision: P6 }],
     accounts: accounts.map((account) => ({ account, status: 'OPEN' as const })),
     opening: [
@@ -117,20 +120,22 @@ async function world(opts: WorldOpts = {}) {
   const chainB = new InMemoryArcChain('b');
   const timing = new ManualTiming(1_000_000n);
   const indexer = new ArcIndexer({ params, sources: [chainA, chainB], store: new MapIndexerStore(), timing });
-  const network = new ArcNetworkAdapter({ params, indexer, blocklist: new SetBlocklist(1_000_000n, opts.blocked ?? []), clock: timing });
+  const blocklist = new SetBlocklist(1_000_000n, opts.blocked ?? []);
+  const network = new ArcNetworkAdapter({ params, indexer, blocklist, clock: timing });
   chainA.mine();
   chainB.mine();
 
-  const faults = new FaultPlan();
   const store = new MapPaymentStore(faults);
   const dust = new CounterDustStore(P6);
   const gateway = new SigningGateway(
     { chainId: 5042002n, transferKind: 'Native', feeCeilingWei: nativeWei(2_000_000_000_000n), wrapperAllowList: [] },
     { store: gatewayStoreFor(store), rail: gatewayRailFor(store, network), ledger, registry, precheck: gatewayPrecheckFor(network), clock: { nowIso: () => '2026-10-07T12:00:00.000Z' }, dfns },
   );
+  const clock = { ambiguousElapsed: false };
+  const timers = { ambiguousElapsed: (_since: string) => clock.ambiguousElapsed };
   const orchestrator = new PaymentOrchestrator(
     { precision: P6, asset: USDC, chainId: 5042002n, transferKind: 'Native', feeFor: () => cbsMinor(FEE) },
-    { store, ledger, registry, receivers, network, dfns, gateway, dust },
+    { store, ledger, registry, receivers, network, dfns, gateway, dust, timers },
   );
   const mine = (tx: ChainTx): void => {
     chainA.mine([tx]);
@@ -144,7 +149,7 @@ async function world(opts: WorldOpts = {}) {
     },
     precision: P6,
       };
-  return { sim, dfns, registry, hotRef, hot, ledger, store, dust, network, params, gateway, orchestrator, mine, chainA, chainB, http, faults, dependsOn: ledger };
+  return { sim, dfns, registry, hotRef, hot, ledger, store, dust, network, params, gateway, orchestrator, mine, chainA, chainB, http, faults, clock, blocklist, walletRec, dependsOn: ledger };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
@@ -467,6 +472,121 @@ describe('unknown DFNS outcome: never retried blindly, never released', () => {
     expect(transfersPosted(w)).toHaveLength(posts);
     expect(r.record.stage).toBe('CREATED');
     expect(await journal(w, `pay:${id}:p6`)).toBeNull();
+  });
+});
+
+describe('quarantine and fail-closed paths (§8.4 check 3, F-6, F-18)', () => {
+  const isPost = (r: { method: string; url: string }) => r.method === 'POST' && r.url.endsWith(`/wallets/${W}/transfers`);
+  const caseOpen = async (w: World, kind: CaseKind, id: PaymentId) => {
+    const c = await w.store.getCase(deriveCaseId(kind, id));
+    return c.kind === 'OK' && c.value.state === 'OPEN';
+  };
+  const quarantinedView = async (w: World, id: PaymentId) => {
+    const v = await gatewayStoreFor(w.store).getForSubmit(id);
+    return v.kind === 'OK' && v.value.quarantined;
+  };
+
+  it('F-6: unresolved after A_ambiguous: UNRESOLVED_SUBMIT case, QUARANTINED, no re-POST, nothing released', async () => {
+    const w = await world();
+    w.sim.faults.push({ match: isPost, outcome: { kind: 'TIMEOUT' } });
+    const id = await created(w);
+    await w.orchestrator.advance(id);
+    const posts = transfersPosted(w).length;
+    w.clock.ambiguousElapsed = true;
+    const r = await w.orchestrator.advance(id);
+    expect(r.note).toContain('QUARANTINED (UNRESOLVED_SUBMIT)');
+    expect(await caseOpen(w, 'UNRESOLVED_SUBMIT', id)).toBe(true);
+    expect(await quarantinedView(w, id)).toBe(true);
+    const again = await w.orchestrator.advance(id);
+    expect(again.note).toContain('no re-POST until LIFT_QUARANTINE');
+    expect(transfersPosted(w)).toHaveLength(posts);
+    expect(w.sim.allTransfers()).toHaveLength(0);
+    expect(again.record.stage).toBe('CREATED');
+    expect(await journal(w, `pay:${id}:p6`)).toBeNull();
+    expect(await net(w, CLEARING)).toBe(-(AMOUNT + FEE));
+    const rail = await w.store.getRailState();
+    expect(rail.kind === 'OK' && rail.value.paused).toBe(false);
+  });
+
+  it('F-6: an entity DFNS already holds is still found by lookup after A_ambiguous (lookups always run)', async () => {
+    const w = await world();
+    w.sim.faults.push({ match: isPost, outcome: 'APPLY_THEN_TIMEOUT' });
+    const id = await created(w);
+    await w.orchestrator.advance(id);
+    w.clock.ambiguousElapsed = true;
+    const r = await w.orchestrator.advance(id);
+    expect(r.record.stage).toBe('PENDING_APPROVAL');
+    expect(await caseOpen(w, 'UNRESOLVED_SUBMIT', id)).toBe(false);
+  });
+
+  it('a gateway refusal flagged quarantine on a re-POST (409) opens an UNRESOLVED_SUBMIT case; later steps never POST', async () => {
+    const w = await world();
+    w.sim.faults.push({ match: isPost, outcome: { kind: 'TIMEOUT' } });
+    w.sim.faults.push({ match: isPost, outcome: { kind: 'RESPONSE', status: 409n, headers: {}, body: JSON.stringify({ error: { message: 'conflict' } }) } });
+    const id = await created(w);
+    await w.orchestrator.advance(id);
+    const r = await w.orchestrator.advance(id);
+    expect(r.note).toContain('QUARANTINED (UNRESOLVED_SUBMIT)');
+    expect(await caseOpen(w, 'UNRESOLVED_SUBMIT', id)).toBe(true);
+    const posts = transfersPosted(w).length;
+    const again = await w.orchestrator.advance(id);
+    expect(again.note).toContain('PAYMENT_QUARANTINED');
+    expect(transfersPosted(w)).toHaveLength(posts);
+    expect(again.record.stage).toBe('CREATED');
+    expect(await journal(w, `pay:${id}:p6`)).toBeNull();
+  });
+
+  it('a quarantine refusal with no marker (binding mismatch) pauses the rail and sends nothing', async () => {
+    const w = await world();
+    const id = await created(w);
+    // DFNS reports another address for the bound wallet: WALLET_ADDRESS_MISMATCH, quarantine, before any marker.
+    Object.assign(w.walletRec, { address: OTHER });
+    const r = await w.orchestrator.advance(id);
+    expect(r.note).toContain('rail paused');
+    const rail = await w.store.getRailState();
+    expect(rail.kind === 'OK' && rail.value.paused).toBe(true);
+    expect(transfersPosted(w)).toHaveLength(0);
+    expect(arcLeg(r.record).submit).toBeNull();
+  });
+
+  it('F-18: a DFNS replacement is never applied: REPLACEMENT case, QUARANTINED, nothing released', async () => {
+    const w = await world();
+    const id = await created(w);
+    await w.orchestrator.advance(id);
+    w.sim.setStatus(transferId(w), 'Pending', { replacementId: 'xfr-replacement-1' });
+    const r = await w.orchestrator.advance(id);
+    expect(r.note).toContain('QUARANTINED (REPLACEMENT)');
+    expect(await caseOpen(w, 'REPLACEMENT', id)).toBe(true);
+    expect(await quarantinedView(w, id)).toBe(true);
+    expect(r.record.stage).toBe('PENDING_APPROVAL');
+    expect(await journal(w, `pay:${id}:p6`)).toBeNull();
+  });
+
+  it('P1 posted but its stage change lost: a later precheck refusal never strands the reservation (P6 follows)', async () => {
+    const w = await world();
+    const id = await created(w);
+    w.faults.arm('applySignal', 'BEFORE_COMMIT', 'TIMEOUT');
+    const first = await w.orchestrator.step(id);
+    expect(first.changed).toBe(false);
+    expect(await journal(w, `pay:${id}:p1`)).not.toBeNull();
+    // The recipient is blocklisted afterwards. P1 exists, so RESERVE completes and the gateway refuses with P6.
+    w.blocklist.block(TO);
+    const r = await w.orchestrator.advance(id);
+    expect(r.record.legs.find((l) => l.kind === 'RESERVE')?.stage).toBe('COMPLETED');
+    expect(r.record).toMatchObject({ stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK', status: 'FAILED' });
+    expect(await journal(w, `pay:${id}:p6`)).not.toBeNull();
+    expect(await clearingOpen({ ledger: w.ledger, asset: USDC })).toBe(0n);
+    expect(await net(w, customerAccount(PAYER_ACCT))).toBe(-OPENING);
+    expect(w.sim.allTransfers()).toHaveLength(0);
+  });
+
+  it('P1 lookup unknown: RESERVE waits, posts nothing and ends nothing', async () => {
+    const w = await world();
+    const id = await created(w);
+    w.faults.arm('getJournalByKey', 'BEFORE_COMMIT', 'UNAVAILABLE');
+    const r = await w.orchestrator.step(id);
+    expect(r.note).toContain('P1 lookup outcome unknown');
+    expect(r.record.stage).toBe('CREATED');
   });
 });
 

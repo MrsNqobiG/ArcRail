@@ -9,6 +9,7 @@
  * UNBALANCED and changes nothing; a P7 mirror nets every account to its
  * pre-journal totals plus the same amount on both sides.
  */
+import { createHash } from 'node:crypto';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { cbsMinor, CBS_MINOR_MAX, cbsPrecision } from '../../src/amounts/index.js';
@@ -28,7 +29,8 @@ const ROLES: readonly LedgerAccount[] = [
   { kind: 'ROLE', role: 'GL-6', sub: 'payments' },
 ];
 const cfg: LedgerFakeConfig = { assets: [{ asset: USDC, precision: p6 }], accounts: ROLES.map((account) => ({ account, status: 'OPEN' })) };
-const pid = paymentId('pay-' + 'cc'.repeat(16));
+/** One payment per key: a payment posts P2 at most once (R-1 m2). */
+const pidOf = (key: string) => paymentId('pay-' + createHash('sha256').update(key).digest('hex').slice(0, 32));
 
 const amount = fc.bigInt({ min: 1n, max: 1n << 40n });
 /** A balanced journal: debit amounts split arbitrarily, credits split differently, same total. */
@@ -46,13 +48,13 @@ const balanced = fc
     return legs;
   });
 
-const journal = (legs: readonly LedgerLeg[], key: string, template: JournalRequest['template'] = 'P2_SETTLE_EXTERNAL', compensates: string | null = null): JournalRequest => ({
+const journal = (legs: readonly LedgerLeg[], key: string, template: JournalRequest['template'] = 'P2_SETTLE_EXTERNAL', compensates: string | null = null, payKey: string = key): JournalRequest => ({
   key: idempotencyKey(key),
   template,
   asset: USDC,
   precision: p6,
   legs,
-  refs: { paymentId: pid, network: 'ARC', txHash: null, logIndex: null, dfnsTransferId: null, compensates },
+  refs: { paymentId: pidOf(payKey), network: 'ARC', txHash: null, logIndex: null, dfnsTransferId: null, compensates },
 });
 
 async function totals(l: LedgerPort): Promise<{ debits: bigint; credits: bigint; per: string[] }> {
@@ -100,7 +102,7 @@ describe('postings property: both fakes agree and conserve to the base unit', ()
         for (const f of [new MapLedger(cfg), new EventLogLedger(cfg)]) {
           const posted = await f.postJournal(journal(legs, 'pay:prop:orig'));
           if (posted.kind !== 'OK') throw new Error('post');
-          const comp = await f.postJournal(journal(mirrorLegs(legs), 'pay:prop:p7', 'P7_COMPENSATE', posted.value.journalId));
+          const comp = await f.postJournal(journal(mirrorLegs(legs), 'pay:prop:p7', 'P7_COMPENSATE', posted.value.journalId, 'pay:prop:orig'));
           expect(comp.kind).toBe('OK');
           for (const a of ROLES) {
             const r = await f.getBalance(a, USDC);
