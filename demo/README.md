@@ -16,3 +16,11 @@ Simulated inside the demo (PAY unit pending): the payment record, the DFNS trans
     cd /home/nqobi/arc-rail
     export PATH=/home/nqobi/arc-rail/.tools/node/bin:$PATH
     npx vitest run -c demo/vitest.demo.config.ts
+
+## Second demo: `payment-history.demo.test.ts`
+Same rules (demo only, fakes, testnet, not reviewed). It sends 1 USDC through the **real signing gateway** to the
+in-memory DFNS simulator (throwaway keys): P1 reserve -> gateway submit (submit marker before the POST, exactly
+one POST) -> DFNS Broadcasted/Confirmed (stand-in for our Arc indexer) -> each step appended to the client
+history (a replayed event writes nothing). Failure case: rail paused, so nothing is sent; the operator cancels
+(CANCELLED_BY_OPERATOR), P6 releases the reservation and the clearing account nets to zero; all in the history.
+Run one file: `npx vitest run -c demo/vitest.demo.config.ts demo/payment-history.demo.test.ts`
