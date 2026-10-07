@@ -29,6 +29,11 @@ case "$tool" in
       deny "Mainnet network flag in a shell command. Mainnet is gated (see docs/GATES.md)."
     fi
 
+    # 1b. The agent never calls custody or Circle production APIs (credentials are runtime-only).
+    if printf '%s' "$lc" | grep -Eq 'api\.(uae\.)?dfns\.io|//api\.circle\.com|app\.dfns\.io|api\.valr\.com'; then
+      deny "Direct calls to Dfns, Circle or VALR production APIs are blocked for the agent. The running service uses runtime credentials; the agent writes code and tests against stubs/sandboxes."
+    fi
+
     # 2. Broadcasting is only allowed against testnet or a local node.
     if printf '%s' "$lc" | grep -Eq 'cast (send|publish|mktx)|forge script[^|;&]*--broadcast|eth_sendrawtransaction|--broadcast'; then
       if ! printf '%s' "$lc" | grep -Eq 'rpc\.testnet\.arc\.|127\.0\.0\.1|localhost|anvil'; then
@@ -55,6 +60,9 @@ case "$tool" in
     fi
     if printf '%s' "$body" | grep -Eiq "(private[_ -]?key|priv[_-]?key|secret[_-]?key|signer[_-]?key|mnemonic|seed[_ -]?phrase)[\"' ]*[:=][ \"']*(0x)?[0-9a-f]{64}"; then
       deny "Content looks like a hard-coded private key. Use the signer interface; tests use the mock signer with a generated throwaway key."
+    fi
+    if printf '%s' "$body" | grep -Eiq "(dfns[_-]?(auth[_-]?)?token|dfns[_-]?service[_-]?account[_-]?(token|key)|webhook[_-]?secret|circle[_-]?api[_-]?key|stablefx[_-]?api[_-]?key|cpn[_-]?api[_-]?key|api[_-]?key|api[_-]?secret|valr[_-]?(api[_-]?)?(key|secret))[\"' ]*[:=][ \"']*[A-Za-z0-9._~+/=-]{20,}"; then
+      deny "Content looks like a hard-coded credential (Dfns token, webhook secret or API key). Read it from the secret store at runtime; never commit it."
     fi
     ;;
 esac
