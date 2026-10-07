@@ -1,0 +1,290 @@
+<title>Arc Rail Build Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an engineering schematic sheet — title block, one wide drawing, then a progress ledger and the ordered remaining work. */
+:root {
+  --paper: #f5f7f8;
+  --sheet: #ffffff;
+  --ink: #15232e;
+  --ink-soft: #4b5d6b;
+  --rule: #c9d3da;
+  --accent: #0b6e8a;
+  --done: #2f8f5b;
+  --done-fill: #e3f3ea;
+  --review: #b7791f;
+  --review-fill: #fbf0dc;
+  --todo: #6b7c89;
+  --todo-fill: #ffffff;
+  --ext: #6a5acd;
+  --ext-fill: #efedfb;
+  --raayl: #55626d;
+  --raayl-fill: #e7ebee;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Public Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f171d; --sheet: #15212a; --ink: #e4ecf1; --ink-soft: #9fb1bd; --rule: #2c3d49; --accent: #4cb8d6;
+    --done: #5cc48a; --done-fill: #183427; --review: #e0a64a; --review-fill: #3a2c14;
+    --todo: #8ea1ae; --todo-fill: #15212a; --ext: #a69bf0; --ext-fill: #262245; --raayl: #a3b1bb; --raayl-fill: #24323c;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f171d; --sheet: #15212a; --ink: #e4ecf1; --ink-soft: #9fb1bd; --rule: #2c3d49; --accent: #4cb8d6;
+  --done: #5cc48a; --done-fill: #183427; --review: #e0a64a; --review-fill: #3a2c14;
+  --todo: #8ea1ae; --todo-fill: #15212a; --ext: #a69bf0; --ext-fill: #262245; --raayl: #a3b1bb; --raayl-fill: #24323c;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--paper); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; margin: 0; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 56px; display: grid; gap: 28px; }
+h1, h2 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(1.7rem, 3.4vw, 2.4rem); font-weight: 800; }
+h2 { font-size: 1.2rem; font-weight: 700; }
+p { margin: 0; max-width: 68ch; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+
+/* Title block, like the corner block of a drawing */
+.titleblock { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: end; border-bottom: 2px solid var(--ink); padding-bottom: 18px; }
+.titleblock .lead { color: var(--ink-soft); margin-top: 8px; }
+.meta { font-family: var(--mono); font-size: 12px; color: var(--ink-soft); border: 1px solid var(--rule); background: var(--sheet); display: grid; grid-template-columns: auto auto; }
+.meta div { padding: 6px 10px; border-bottom: 1px solid var(--rule); }
+.meta div:nth-child(odd) { border-right: 1px solid var(--rule); text-transform: uppercase; letter-spacing: 0.06em; }
+.meta div:nth-last-child(-n+2) { border-bottom: 0; }
+.meta b { color: var(--ink); font-weight: 500; }
+@media (max-width: 720px) { .titleblock { grid-template-columns: 1fr; } }
+
+/* Legend */
+.legend { display: flex; flex-wrap: wrap; gap: 10px 22px; font-size: 13.5px; }
+.key { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 22px; height: 14px; border-radius: 3px; border: 2px solid; flex: none; }
+.sw.done { background: var(--done-fill); border-color: var(--done); }
+.sw.review { background: var(--review-fill); border-color: var(--review); }
+.sw.todo { background: var(--todo-fill); border-color: var(--todo); border-style: dashed; }
+.sw.ext { background: var(--ext-fill); border-color: var(--ext); border-style: dashed; }
+.sw.raayl { background: var(--raayl-fill); border-color: var(--raayl); }
+
+/* Drawing */
+.drawing { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; overflow-x: auto; }
+.drawing svg { display: block; min-width: 940px; width: 100%; height: auto; }
+.drawing .cap { font-size: 12.5px; color: var(--ink-soft); padding: 10px 16px 14px; border-top: 1px solid var(--rule); font-family: var(--mono); }
+svg text { font-family: var(--body); fill: var(--ink); }
+svg .t { font-family: var(--display); font-weight: 700; font-size: 15px; }
+svg .s { font-size: 12px; fill: var(--ink-soft); }
+svg .lbl { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; fill: var(--ink-soft); }
+svg .tag { font-family: var(--mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.04em; }
+.b-done { fill: var(--done-fill); stroke: var(--done); stroke-width: 2; }
+.b-review { fill: var(--review-fill); stroke: var(--review); stroke-width: 2; }
+.b-todo { fill: var(--todo-fill); stroke: var(--todo); stroke-width: 1.6; stroke-dasharray: 6 4; }
+.b-ext { fill: var(--ext-fill); stroke: var(--ext); stroke-width: 1.6; stroke-dasharray: 6 4; }
+.b-raayl { fill: var(--raayl-fill); stroke: var(--raayl); stroke-width: 1.6; }
+.b-person { fill: var(--sheet); stroke: var(--ink); stroke-width: 2; }
+.tag-done { fill: var(--done); } .tag-review { fill: var(--review); } .tag-todo { fill: var(--todo); } .tag-ext { fill: var(--ext); } .tag-raayl { fill: var(--raayl); }
+.wire { stroke: var(--ink); stroke-width: 1.6; fill: none; }
+.wire-soft { stroke: var(--ink-soft); stroke-width: 1.4; fill: none; stroke-dasharray: 3 4; }
+.arrowhead { fill: var(--ink); }
+.grid-line { stroke: var(--rule); stroke-width: 1; }
+
+/* Progress */
+.two { display: grid; grid-template-columns: 1.15fr 1fr; gap: 28px; align-items: start; }
+.two > * { min-width: 0; }
+@media (max-width: 860px) { .two { grid-template-columns: 1fr; } }
+.panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 20px; display: grid; gap: 16px; }
+.bar { display: flex; height: 18px; border-radius: 3px; overflow: hidden; border: 1px solid var(--rule); }
+.bar span { display: block; height: 100%; }
+.bar .done { background: var(--done); } .bar .review { background: var(--review); } .bar .todo { background: repeating-linear-gradient(135deg, var(--sheet) 0 5px, var(--rule) 5px 7px); }
+.counts { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.counts b { font-family: var(--display); font-size: 1.35rem; margin-right: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); padding: 0 8px 8px 0; border-bottom: 1px solid var(--rule); }
+td { padding: 9px 8px 9px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+.pill { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1.5px solid; white-space: nowrap; }
+.pill.done { color: var(--done); border-color: var(--done); background: var(--done-fill); }
+.pill.review { color: var(--review); border-color: var(--review); background: var(--review-fill); }
+.pill.todo { color: var(--todo); border-color: var(--todo); border-style: dashed; }
+.pill.ext { color: var(--ext); border-color: var(--ext); border-style: dashed; background: var(--ext-fill); }
+.tablewrap { overflow-x: auto; }
+
+ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; display: grid; gap: 12px; }
+ol.steps li { counter-increment: s; display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: start; }
+ol.steps li::before { content: counter(s); font-family: var(--display); font-weight: 800; font-size: 14px; width: 28px; height: 28px; border: 2px solid var(--ink); border-radius: 50%; display: grid; place-items: center; }
+ol.steps li.now::before { background: var(--review); border-color: var(--review); color: var(--sheet); }
+ol.steps b { font-weight: 600; }
+ol.steps small { display: block; color: var(--ink-soft); font-size: 13px; }
+ul.plain { margin: 0; padding-left: 18px; display: grid; gap: 8px; }
+.note { border-left: 3px solid var(--accent); padding: 4px 0 4px 14px; color: var(--ink-soft); font-size: 14px; }
+@page { size: A4 landscape; margin: 11mm; }
+@media print {
+  :root, :root:not([data-theme="light"]), :root[data-theme="dark"] {
+    --paper: #ffffff; --sheet: #ffffff; --ink: #15232e; --ink-soft: #4b5d6b; --rule: #c9d3da; --accent: #0b6e8a;
+    --done: #2f8f5b; --done-fill: #e3f3ea; --review: #b7791f; --review-fill: #fbf0dc;
+    --todo: #6b7c89; --todo-fill: #ffffff; --ext: #6a5acd; --ext-fill: #efedfb; --raayl: #55626d; --raayl-fill: #e7ebee;
+    color-scheme: light;
+  }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-size: 12.5px; }
+  .wrap { max-width: none; padding: 0; gap: 16px; }
+  .drawing { overflow: visible; break-inside: avoid; }
+  .drawing svg { min-width: 0; width: auto; height: 112mm; max-width: 100%; margin: 0 auto; }
+  .drawing .cap { padding: 6px 12px 8px; font-size: 10.5px; }
+  h1 { font-size: 1.7rem; }
+  .titleblock { padding-bottom: 10px; gap: 12px; }
+  .titleblock .lead { margin-top: 4px; font-size: 11.5px; }
+  .meta div { padding: 3px 8px; }
+  .legend { font-size: 11.5px; }
+  .two { grid-template-columns: 1.15fr 1fr; break-before: page; }
+  .panel, figure, table, tr, li { break-inside: avoid; }
+  .tablewrap { overflow: visible; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="titleblock">
+    <div>
+      <div class="eyebrow">Raayl × Arc · settlement rail</div>
+      <h1>What we've built so far</h1>
+      <p class="lead">The goal: a customer sends a payment in rand or in USDC, Raayl converts it where needed, moves it over Circle's Arc network, and pays the receiver into a bank account or a USDC wallet. This sheet shows the parts of that system that are built today and how they connect to Raayl's existing systems.</p>
+    </div>
+    <div class="meta" aria-label="Drawing details">
+      <div>As of</div><div><b>7 Oct 2026</b></div>
+      <div>Network</div><div><b>Arc testnet only</b></div>
+      <div>Real money</div><div><b>None yet</b></div>
+      <div>Mainnet</div><div><b>Locked until sign-off</b></div>
+    </div>
+  </header>
+
+  <div class="legend" aria-label="Legend">
+    <span class="key"><span class="sw done"></span>Done and checked</span>
+    <span class="key"><span class="sw review"></span>Built, being reviewed or fixed</span>
+    <span class="key"><span class="sw raayl"></span>Raayl's existing system (we connect to it)</span>
+    <span class="key"><span class="sw ext"></span>Arc network (outside party)</span>
+  </div>
+
+  <figure class="drawing" style="margin:0">
+    <svg viewBox="0 0 1200 580" role="img" aria-labelledby="dtitle ddesc">
+      <title id="dtitle">Schematic of the parts of the Arc rail built so far</title>
+      <desc id="ddesc">Four rows. Pricing: our Quote asks Raayl's OTC desk for a pricing code. Moving money: our DFNS safety gate passes only checked sends to DFNS, which sends them on the Arc testnet, where our Arc tracker reads every transfer and confirms it back. Connecting to Raayl: our Raayl connection points link to Raayl's ledger, wallets and payment records. Underneath: the foundations.</desc>
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="arrowhead"/></marker>
+      </defs>
+
+      <text class="lbl" x="20" y="36">PRICING A PAYMENT</text>
+      <text class="lbl" x="20" y="186">MOVING THE MONEY ON ARC</text>
+      <text class="lbl" x="20" y="372">CONNECTING TO RAAYL</text>
+      <text class="lbl" x="20" y="506">UNDERNEATH EVERYTHING</text>
+      <line class="grid-line" x1="20" y1="166" x2="1180" y2="166"/>
+      <line class="grid-line" x1="20" y1="352" x2="1180" y2="352"/>
+      <line class="grid-line" x1="20" y1="486" x2="1180" y2="486"/>
+
+      <!-- Row A: pricing -->
+      <rect class="b-review" x="20" y="52" width="280" height="90" rx="6"/>
+      <text class="t" x="36" y="78">Quote</text>
+      <text class="s" x="36" y="98">works out the price, the fees and</text>
+      <text class="s" x="36" y="114">what the receiver gets; 5-minute lock</text>
+      <text class="tag tag-review" x="36" y="133">BUILT · FIXING REVIEW POINTS</text>
+
+      <path class="wire" d="M300 97 H376" marker-end="url(#ah)" marker-start="url(#ah)"/>
+      <text class="s" x="338" y="88" text-anchor="middle">price code</text>
+
+      <rect class="b-raayl" x="380" y="52" width="280" height="90" rx="6"/>
+      <text class="t" x="396" y="78">Raayl OTC desk</text>
+      <text class="s" x="396" y="98">issues the pricing code; a person</text>
+      <text class="s" x="396" y="114">fills the conversion</text>
+      <text class="tag tag-raayl" x="396" y="133">RAAYL · EXISTING</text>
+
+      <!-- Row B: moving money -->
+      <rect class="b-review" x="20" y="202" width="280" height="90" rx="6"/>
+      <text class="t" x="36" y="228">DFNS safety gate</text>
+      <text class="s" x="36" y="248">lets a send through only if it matches</text>
+      <text class="s" x="36" y="264">the payment record and the test network</text>
+      <text class="tag tag-review" x="36" y="283">BUILT · FIXING REVIEW POINTS</text>
+
+      <path class="wire" d="M300 247 H376" marker-end="url(#ah)"/>
+      <text class="s" x="338" y="238" text-anchor="middle">checked</text>
+
+      <rect class="b-raayl" x="380" y="202" width="240" height="90" rx="6"/>
+      <text class="t" x="396" y="228">DFNS</text>
+      <text class="s" x="396" y="248">Raayl's wallet provider:</text>
+      <text class="s" x="396" y="264">approves and signs</text>
+      <text class="tag tag-raayl" x="396" y="283">RAAYL · EXISTING</text>
+
+      <path class="wire" d="M620 247 H676" marker-end="url(#ah)"/>
+
+      <rect class="b-ext" x="680" y="202" width="220" height="90" rx="45"/>
+      <text class="t" x="790" y="240" text-anchor="middle">Arc testnet</text>
+      <text class="s" x="790" y="260" text-anchor="middle">USDC network, test money only</text>
+
+      <path class="wire" d="M900 247 H936" marker-end="url(#ah)"/>
+
+      <rect class="b-done" x="940" y="202" width="240" height="90" rx="6"/>
+      <text class="t" x="956" y="228">Arc tracker</text>
+      <text class="s" x="956" y="248">reads every transfer on Arc and</text>
+      <text class="s" x="956" y="264">confirms when money has arrived</text>
+      <text class="tag tag-done" x="956" y="283">PASSED REVIEW</text>
+
+      <path class="wire-soft" d="M1060 292 V324 H160 V296" marker-end="url(#ah)"/>
+      <text class="s" x="610" y="318" text-anchor="middle">confirms each transfer back, so nothing is booked on a guess</text>
+
+      <!-- Row C: Raayl connections -->
+      <rect class="b-review" x="20" y="388" width="580" height="78" rx="6"/>
+      <text class="t" x="36" y="414">Raayl connection points</text>
+      <text class="s" x="36" y="434">balanced ledger postings, wallets, payment records and payment status</text>
+      <text class="tag tag-review" x="36" y="454">BUILT · FIXING REVIEW POINTS</text>
+
+      <path class="wire" d="M600 427 H676" marker-end="url(#ah)" marker-start="url(#ah)"/>
+
+      <rect class="b-raayl" x="680" y="388" width="500" height="78" rx="6"/>
+      <text class="t" x="696" y="414">Raayl ledger, wallets and payment records</text>
+      <text class="s" x="696" y="434">Raayl stays the system of record; we plug in, we don't replace</text>
+      <text class="tag tag-raayl" x="696" y="454">RAAYL · EXISTING</text>
+
+      <!-- Row D: foundations -->
+      <rect class="b-done" x="20" y="520" width="1160" height="50" rx="6"/>
+      <text class="t" x="36" y="542">Foundations</text>
+      <text class="s" x="36" y="560">Safety rules · mainnet lock · secret scanning · automated checks on every change · signed releases · exact money maths (no rounding errors)</text>
+      <text class="tag tag-done" x="1166" y="542" text-anchor="end">DONE</text>
+    </svg>
+    <figcaption class="cap">Coloured boxes with a status tag are ours; grey boxes are Raayl's existing systems that we connect to without changing them.</figcaption>
+  </figure>
+
+  <section class="two">
+    <div class="panel">
+      <h2>What's built</h2>
+      <div class="counts">
+        <span><b>1</b>part passed independent review</span>
+        <span><b>3</b>parts built, fixing review points</span>
+        <span><b>✓</b>foundations and design done</span>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Part</th><th>What it does</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Foundations and design</td><td>Safety rules, mainnet lock, automated checks, signed releases, exact money maths, and the agreed blueprint</td><td><span class="pill done">Done</span></td></tr>
+            <tr><td>Arc tracker</td><td>Sees every USDC transfer on Arc and confirms it arrived</td><td><span class="pill done">Passed</span></td></tr>
+            <tr><td>DFNS safety gate</td><td>Lets DFNS sign only payments that match our records</td><td><span class="pill review">Fixing</span></td></tr>
+            <tr><td>Raayl connection points</td><td>Plugs into Raayl's ledger, wallets and payment records</td><td><span class="pill review">Fixing</span></td></tr>
+            <tr><td>Quote</td><td>Works out the price and what the receiver gets</td><td><span class="pill review">Fixing</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Every part is checked by an independent reviewer before it counts as done. "Fixing" means the reviewer found points to correct and the fixes are under way.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Waiting on other people</h2>
+      <ul class="plain">
+        <li><span class="pill ext">Khumo &amp; Sherwin</span> Set up the Arc testnet DFNS account (they've offered). This lets us run a real test payment on testnet.</li>
+        <li><span class="pill ext">Khumo</span> Answer the 12 follow-up questions (amount format, where fees are posted, and so on).</li>
+        <li><span class="pill ext">Business</span> Choose a bank payout partner. Until then, bank payouts use a stand-in.</li>
+        <li><span class="pill ext">Legal</span> An opinion on cross-border payments. Until then, they stay switched off.</li>
+        <li><span class="pill ext">Named sign-offs</span> Required before anything touches real money on Arc mainnet.</li>
+      </ul>
+    </div>
+  </section>
+
+</div>

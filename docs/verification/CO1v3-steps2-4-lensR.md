@@ -1,0 +1,150 @@
+VERIFICATION · lens: R · target: CO-1 v3 Step 2 (docs/GATES.md gate recording) + Step 4 (CLAUDE.md merge), uncommitted on branch co1-v3/nova-arc-d1 · commit: 7fe69e270d5f886d92b92afd59645e5daa6de075 (HEAD; working tree dirty)
+
+Inputs: docs/kit-v3/CHANGE_ORDER.md (Steps 2, 4, 5, 8), docs/kit-v3/CLAUDE.md, docs/kit-v3/KICKOFF_PROMPT.md §9, root KICKOFF_PROMPT.md §9, docs/constants.md, docs/OPEN_QUESTIONS.md, docs/LEDGER.md, docs/G1_PACKET.md §2a, docs/sources/ (arc, dfns), docs/sources/MANIFEST.md, src/chain/config/index.ts. Baselines: /tmp/claude-1000/CLAUDE.md.pre-merge (byte-identical to `git show HEAD:CLAUDE.md`), /tmp/claude-1000/GATES.md.pre-co1-step2 (byte-identical to `git show HEAD:docs/GATES.md`). The saved diff /tmp/claude-1000/CLAUDE.md.merge.diff was regenerated independently and matches (apart from the header lines).
+
+CHECKS:
+- C1 Step 4 required rules present in merged CLAUDE.md, re-derived from CHANGE_ORDER Step 4 one by one → PASS.
+  - Extend existing code: line 3, "Extend Raayl's existing code; never build a parallel system."
+  - Testnet only (`ArcTestnet`) until gates signed: rule 1.
+  - No secrets / no direct DFNS, Circle or VALR production calls / read-only DFNS org: rules 2 and 3.
+  - Integer money: "Integer arithmetic only. No floats anywhere on a money path."
+  - Arc facts, all present:
+    - two decimal views ("Two views of one USDC balance");
+    - system-emitter canonical log ("Canonical log");
+    - 20 gwei floor;
+    - `eth_getLogs` cap;
+    - blocklist behaviour;
+    - no privacy;
+    - `Memo` and `Multicall3From`.
+  - Authenticity and dedupe on every inbound signal: own bullet.
+  - Wrapper-call signing rule: own section.
+  - Network abstraction: own section.
+  - `REVERSED` = compensating entry only: money invariants.
+  - Gate recording: rule 7.
+  - GL-1…GL-7: Naming.
+  - No LLM in money path: rule 4.
+- C2 Old repo rules preserved (pre-merge vs merged, rule by rule) → PASS, with notes.
+  - Verbatim-retained lines confirmed by string equality:
+    - rule 4 (no LLM);
+    - rule 6 (SIGNED-OFF is human-owned);
+    - all five phase-discipline bullets;
+    - the footer;
+    - the whole Commands line.
+  - Carried with additions:
+    - rule 2: Signer/MockSigner kept;
+    - rule 5: OPEN_QUESTIONS and "never fill a gap" kept;
+    - money invariants: all five kept and extended;
+    - Arc facts: CCTP 26, BFT finality, no PII on-chain and blocklist gas all kept.
+  - Changed by CO-1 v3, so not a loss:
+    - rule 3's unlock moved from G1 to G1b (CO-1 "Read-only on existing code until G1b");
+    - rule 1 narrowed from "every gate in docs/GATES.md" to "the G-P pilot gates, then the G-M gates" (kit-v3 "the required gates", CO-1 Step 8). See D3.
+- C3 No rule-vs-rule contradiction that lets mainnet or secrets through → PASS.
+  - Two minor framing or consistency issues remain: the CBS framing (D1) and the rule 1 vs code gate set (D2).
+- C4 Arc addresses vs constants.md and archive (4 of 4) → PASS.
+  - `0x3600…0000`: C-12.
+  - `0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE`: C-20.
+  - `0x5294E9927c3306DcBaDb03fe70b92e01cCede505`: C-62.
+  - `0x522fAf9A91c41c443c66765030741e4AaCe147D0`: C-63, and docs/sources/arc/arc_references_contract-addresses.md:282,289.
+  - Each is character-for-character identical.
+- C5 Other Arc numbers vs constants.md → PASS. Each value matches its constants row:
+  - chain IDs 5042002 / 5042: C-01, C-02;
+  - 20 gwei floor: C-30;
+  - max base fee 20,000 gwei: C-31;
+  - `-32012` and ≤9,999: C-40;
+  - `-32014`: C-42;
+  - CCTP 26: C-60.
+- C6 Arc behavioural claims vs sources → PASS with minor gaps (D5, D6, D7).
+  - The blocklist pre-mempool claim is backed by docs/sources/arc/integrate_exchanges_custody.md:247-255: "Transactions from blocklisted sender addresses are rejected at the pre-mempool stage… no gas is consumed". The file hash recomputed as d70b6bea…ef27e, equal to MANIFEST:32. There is no constants.md row for it.
+  - "Multicall3From emits no batch event" is uncited.
+  - "under the floor are dropped" simplifies M-4.
+- C7 DFNS facts vs docs/sources/dfns → PASS.
+  - Network names `Arc`/`ArcTestnet` and the 10-block confirmation delay: networks_index.md:34, "| Arc | ArcTestnet | 1 | N/A | 10 |".
+  - `X-DFNS-WEBHOOK-SIGNATURE`: guides_developers_webhooks.md:36,45.
+  - HMAC with SHA-256 and the webhook secret: same file, "DFNS signatures is a HMAC … using SHA-256".
+  - Secret returned "**only once**": same file.
+  - New service account has "**no permissions**": guides_developers_service-account.md:78.
+  - Hashes recomputed: networks_index.md 1330da14…a253 and guides_developers_webhooks.md e2fea60d…92ce, both equal to MANIFEST:96 and :99.
+- C8 GATES G0 recorded as Step 2 requires ("G0 (passed)") → PASS.
+  - Recorded as "NOT SIGNED. PASSED IN CHAT on 2026-10-02", with a record giving the quote "continue".
+  - Matches LEDGER:8: "| G0 | 2026-10-02 | Operator said "continue" |", plus the stopped verifier and Q-P1/Q-P2 OPEN.
+- C9 GATES G1 recorded as Step 2 requires ("approved in chat, testnet only, superseded by G1b") → PASS.
+  - The row and record say all three.
+  - The quotes "g1 is ago" and "for g1 - use sandbox options" match LEDGER:31-32.
+  - ADR-001…ADR-008 options match G1_PACKET §2a lines 35-42 row for row.
+  - The initial commit `4ebdbed2d5aa1864054b9b36ec51f96d832c0800`, dated 2026-10-06, was confirmed by `git log --reverse`.
+- C10 No SIGNED-OFF added for anyone → PASS.
+  - `grep -c SIGNED-OFF` gives 3 in the old file and 3 in the new. All 3 are rule text (lines 3, 5, 18), and no Status cell holds SIGNED-OFF.
+  - Name and Role cells are empty in every row.
+- C11 G2, G3 and all eight G-M rows unchanged → PASS.
+  - Byte-level `grep -F` diff of each row shows them identical.
+  - `diff old new | grep '^<'` shows only the G0 and G1 rows were replaced.
+- C12 G-P rows quoted exactly from kit-v3 KICKOFF §9 and marked proposed → PASS.
+  - Scripted byte comparison of items 1-6: all EXACT.
+  - Each row carries "(proposed, for Compliance to confirm)".
+  - The section heading says "proposed, for Compliance to confirm" and "The agent cannot clear these".
+- C13 D1–D7 vs CO-1 Step 5 → [inspection-only] PASS with a minor finding (D8).
+  - D1, D5, D6 and D7 carry every Step 5 element. D5 and D6 drop only the explanatory clauses "Arc is not responsible for fiat conversion" and "etc.".
+  - D2, D3 and D4 drop operative details.
+- C14 Per-gate record format → PASS.
+  - The "Gate records" section defines Gate, Decision, Name, Role, Date, Commit SHA and ADR options chosen.
+  - A Template is provided.
+  - The G0 and G1 records use it, with SHA "none" and a stated reason.
+- C15 `node tools/g2-precondition.mjs docs/GATES.md --delegated=cosign,slsa` (node v22.23.3, from .tools/node/bin) → PASS. Output: "G2 precondition ok; delegated to .github/workflows/release-sign.yml: cosign, slsa", exit 0.
+- C16 `npx vitest run test/unit/mainnet-gate.test.ts test/unit/g2-precondition.test.ts` → PASS. 2 files, 72/72 tests, exit 0. This includes "the real docs/GATES.md keeps the layout the gate check parses" (mainnet-gate.test.ts:129).
+- C17 `bash .claude/hooks/test-guard.sh` → PASS. "guard self-test: 32 passed, 0 failed", exit 0.
+- C18 Parser robustness against the new rows, by re-tracing src/chain/config/index.ts:136-158 → PASS.
+  - The filter `/^G-M\s*\d+$/` rejects "G-P 1"…"G-P 6", "D1"…"D7", "G0b" and "G1b". The new rows can neither satisfy the check nor trip "unexpected gate row".
+  - The G2 parser is unaffected: the G2 row is unchanged and C15 passes.
+- C19 Item 6: does the G-M-only mainnet check contradict merged rule 1? → PASS (not a contradiction that lets mainnet through), with minor finding D2.
+  - `resolveChain` (index.ts:206-211) calls `assertMainnetAllowed` and then throws unconditionally: "mainnet refused: disabled in code (enabled: false)". `ARC_MAINNET_DISABLED.enabled: false` is at line 106.
+  - So no state of GATES.md, including all G-M rows SIGNED-OFF with G-P unsigned, yields a mainnet config today.
+  - The gap is latent: the check that would gate a future enabling change omits the G-P rows that rule 1 and kit-v3 KICKOFF §9 ("while the gates it needs are unsigned") require.
+  - GATES.md:9 discloses it.
+
+CANDIDATES (Lens A): n/a (Lens R pass).
+
+DEFECTS:
+- D1 · CLAUDE.md:3 vs :5 · Lens R / rule consistency (leftover CBS framing) · minor
+  - Line 3 says "Raayl is the product: customer, API, KYB/KYC, pricing, ledger and reconciliation". Line 5 says "The CBS stays the system of record for customers, accounts, balances, KYC/AML and the general ledger. We build an **Arc Rail Adapter** beside it".
+  - Two systems are named system of record for customers, KYC and the ledger. "beside it" also sits awkwardly with "never build a parallel system".
+  - The paragraph is inherited from docs/kit-v3/CLAUDE.md:5, so it is not introduced by the merge.
+  - Rule 3 ("Existing Raayl code and the CBS") and Conservation ("the CBS (or Raayl ledger)") show the ambiguity in use.
+  - It is not a safety loss: no mainnet or secret path depends on it.
+  - Fix: one sentence saying what "CBS" means for Raayl (for example, "for Raayl, 'CBS' means Raayl's ledger and customer system of record").
+- D2 · CLAUDE.md rule 1 vs src/chain/config/index.ts:110-120 and docs/GATES.md:3 · Lens R / rule-vs-code consistency · minor
+  - Rule 1 says mainnet waits for "the G-P pilot gates, then the G-M gates".
+  - `REQUIRED_MAINNET_GATES` lists only G-M 1-8, and GATES.md:3 still says "disabled in code until **every** G-M gate below is SIGNED-OFF".
+  - Not blocking, because `resolveChain` refuses mainnet unconditionally (C19).
+  - Fix: in the reviewed change that enables mainnet (or once Compliance confirms G-P), include every G-P row present in the required set (fail closed on any unsigned G-P row), and align GATES.md:3 with rule 1.
+- D3 · CLAUDE.md rule 1 · Lens R / dropped scope · minor
+  - The old wording "until every gate in docs/GATES.md is signed" covered G2 and G3 (testnet skeleton and demonstration verdict). The new wording lists only G-P and G-M.
+  - G-P 5 ("Monitor and reconciliation proven on testnet (from the evidence pack)") covers G3 only implicitly.
+  - Follows kit-v3 and CO-1 Step 8, so it is a narrowing, not a lost safety rule.
+  - Fix: state "after G3" or "all earlier gates" explicitly.
+- D4 · docs/GATES.md:16 (G1 row) vs CLAUDE.md rule 3 · Lens R / stale cross-reference · minor
+  - The G1 row says "Also unlocks the CONTRACT integration points for the CBS's normal change process (CLAUDE.md rule 3)". Merged rule 3 now says read-only "until gate G1b is signed".
+  - Fix: add "(superseded: rule 3 now unlocks at G1b)".
+- D5 · CLAUDE.md, Arc facts, Blocklist bullet · Lens R / citation (rule 5) · minor
+  - "A blocklisted sender is rejected before the mempool (no gas, no receipt)" has no row in docs/constants.md. It is sourced only in the archive (integrate_exchanges_custody.md:247-255).
+  - Q-A13, still OPEN, asks whether `eth_sendRawTransaction` rejects before inclusion.
+  - The same bullet cites "(Q-P2, constants M-1)". Q-P2 is the operator question on rewording CLAUDE.md, and it is still OPEN in OPEN_QUESTIONS.md:12; the factual question is Q-A1. The merge has in effect applied Q-P2's proposed wording ("handle both") without Q-P2 being closed.
+  - Fix: add a constants C-row, cite Q-A1/Q-A13, and update or close Q-P2 with the operator.
+- D6 · CLAUDE.md, Arc facts, Batching bullet · Lens R / citation (rule 5) · minor
+  - "It emits no batch event" has no source in docs/constants.md (C-63 holds only the address) or in docs/sources/arc. The archive supports only "preserves the original `msg.sender` in each subcall" (contract-addresses.md:282).
+  - The safe consequence ("verify every inner transfer individually") stands either way.
+  - Fix: cite it or mark it unverified.
+- D7 · CLAUDE.md, Arc facts, Fees bullet · Lens R / fact precision · minor
+  - "transactions under the floor are dropped" simplifies constants M-4. The docs disagree: silently dropped, vs `transaction underpriced`, vs pending indefinitely, and M-4 says to treat RPC rejection and silent drop as normal outcomes.
+  - Fix: "are dropped or rejected (M-4); enforce the floor before signing".
+- D8 · docs/GATES.md demo-gate rows D2, D3, D4 · Lens R / fidelity to CO-1 Step 5 · minor
+  - D4 omits the travel-rule detail: "full set, and the reduced set below R5,000 (verify the text). The zero threshold applies."
+  - D3 omits the two permitted matching rules ("a per-invoice address or a unique reference amount") and "External payers won't attach memos".
+  - D2 omits "(unless G0b proves it is already per-transfer)" and "DFNS creates them".
+  - Fix: quote Step 5 per milestone, or cite "CO-1 v3 Step 5" as the authoritative text.
+- D9 · docs/GATES.md:46 G-M heading vs :37 G-P heading · Lens R / citation ambiguity (pre-existing rows, correctly left unchanged) · minor
+  - The G-M rows are "KICKOFF §9, quoted" from root KICKOFF_PROMPT.md:214-221.
+  - The G-P rows quote docs/kit-v3/KICKOFF_PROMPT.md §9, whose G-M list is shorter ("FSCA authorisation + FIC Item 22 + RMCP.").
+  - The same label now points at two different files.
+  - Fix: qualify the source path in each heading.
+
+VERDICT: NEGATIVE (9 defects: 0 blocking, 9 minor)
