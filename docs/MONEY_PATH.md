@@ -56,8 +56,8 @@ Status: Phase 2 skeleton. Most paths hold interfaces and `not implemented: <unit
 | `src/gateway/index.ts` | 4 | F2 thin signing gateway (checks before every DFNS transfer) |
 | `src/gateway/wrapper.ts` | 4 | F2b wrapper-call rule (allow-list, inner-call decoding) |
 | `src/journey/quote/fiat.ts` | 1 | JQUOTE `FiatMinor<CCY>` branded fiat amounts (one per currency), checked constructor and same-currency add/subtract, built on U1 patterns without modifying U1 |
-| `src/journey/quote/ports.ts` | 10 | JQUOTE FxPort (Nova FX/OTC engine via ConversionPort, payer FIAT only) and PayoutQuotePort (off-ramp partner, receiver FIAT_BANK only) shapes and exact integer quote checks |
-| `src/journey/quote/compose.ts` | 7 | JQUOTE all-in journey quote: only the legs each pay-in x payout combination needs, gas allowance split and dust records, expiry and rate locks, cross-border OFF, binding digest, conservation re-check (NOVA_ARC_DESIGN §4.1) |
+| `src/journey/quote/ports.ts` | 10 | JQUOTE FxPort (Nova FX/OTC engine via ConversionPort, payer FIAT only) and PayoutQuotePort (off-ramp partner, receiver FIAT_BANK only) shapes and exact integer quote checks, including the remainder bound (below one convertible step of the quoted rate) |
+| `src/journey/quote/compose.ts` | 7 | JQUOTE all-in journey quote: only the legs each pay-in x payout combination needs, customer fee F (platform fee + charged gas), gas allowance split and dust records, expiry and rate locks, cross-border OFF (demo gate bound to the settlement adapter's chain ID and the root-declared partner kind), binding digest, conservation re-check (NOVA_ARC_DESIGN §4.1, §9.2) |
 
 ## Named parts
 

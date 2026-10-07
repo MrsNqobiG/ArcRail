@@ -72,6 +72,14 @@ Tests must include tampered inner calls, which must be refused.
 - Perfecting loop: Lens R (verifier), then Lens A (verifier), then Lens H (**cold-reader**). Exit only after 3 consecutive POSITIVE passes. Cap 10 rounds, plus 2 grace rounds. Regeneration budget 3. Plateau ladder: reframe, then regenerate, then structural mark.
 - Every response ends with: `phase · units frozen/total · streak n/3 · rounds used/10 · regen budget left`
 
+## Speed rules (operator, 2026-10-07: "faster without losing accuracy")
+These save time without dropping a check. Nothing here overrides the money invariants or the phase discipline above.
+- **Targeted runs while iterating.** In a generation or fix block, run only your unit's tests and Stryker on your own files (`--mutate '<your files>'`). The full suite and `scripts/ci.sh` run at integration. Every check still runs before a unit counts as done.
+- **Type-check once per block, not after every edit.** Run `npx tsc --noEmit` when the block's code is written, and again only after you fix what it reports. Never skip it.
+- **Targeted edits.** Change the lines that need changing. Rewrite a whole file only when it is new or the verifier report asks for it.
+- **Terse agent reports.** A block's final report is short bullets: what changed (paths), the check results (pass/fail with numbers), and open items. No narrative. This applies to reports only. Code, docs and verifier findings stay complete and precise, with file:line evidence.
+- **Read only what you need.** Open the design sections and files your unit touches. Don't re-read the whole archive each block.
+
 ## Naming
 - GL account roles are `GL-1` … `GL-7`, never `G1` … (to avoid clashing with gate names).
 - Gates are `G0`, `G1`, `G0b`, `G1b`, `G2`, `G3`, `D1`…`D7`, `G-P 1`…, `G-M 1`… (docs/GATES.md).
