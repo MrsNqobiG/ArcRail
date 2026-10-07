@@ -56,7 +56,11 @@
     "src/journey/payout/partner/fake.ts",
     "src/journey/payout/partner/cpn-stub.ts",
     "src/journey/recipients/index.ts",
-    "src/history/index.ts"
+    "src/history/index.ts",
+    "src/ops/types.ts",
+    "src/ops/ports.ts",
+    "src/ops/audit.ts",
+    "src/ops/queue.ts"
   ],
   "ignorePatterns": [
     ".tools",

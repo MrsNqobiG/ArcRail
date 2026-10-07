@@ -170,6 +170,14 @@ The contract suites also cover authenticity (valid, invalid and missing signatur
 - **A-6** New ports `PayInPort`, `ConsentPort` and `HistoryPort` are added to D1 §7.
 - **A-7** D1 §9.1 GL-role config validation requires the gas, dust and write-off accounts to be set (D-5).
 
+## PORTS signature deviations from D1 §7.2 and §7.3 (recorded for adoption; the code headers of src/nova-ports/ledger.ts and payment-store.ts list the same)
+
+- **B-1** LedgerPort: `getBalance` returns debit and credit totals (`LedgerBalance`), not a signed net; `JournalReceipt` adds `template` and `refs`; `LedgerRejectCode` adds `INVALID_JOURNAL` and `ALREADY_COMPENSATED`; `LedgerView` adds `paymentJournals`; the P3 fee's own P7 uses a second key `pay:<id>:p7f`. The ledger refuses a second P1, P2, P2I, P2P, P11 or P2R for one payment, a P2 or P2I after any release, and a P11 after a P2R (BINDING_MISMATCH).
+- **B-2** PaymentStorePort: `create` takes `NewPayment` and adds `INVALID_JOURNEY`; `markSubmit` adds `NOT_READY`; `commitRange` adds `SIGNAL_CONFLICT`; `liftHold` adds `SIGNAL_CONFLICT` and `HOLD_NOT_RESOLVED`; `unpause` adds `NOT_PAUSED`, `DECISION_MISSING`, `DECISION_CONSUMED` and `WRONG_INCIDENT`; `RailState` adds `incident`; `InboundSignal.source` adds `LEDGER` and `INTERNAL`; `OperatorDecision` adds `txHash` (LINK_HASH only); `CaseRecord` adds `matchedLog`; `putCase` adds `BINDING_MISMATCH` (a PARTNER_RETURN case expects exactly its payment's amount A, and the payment must exist).
+- **B-3** Added methods: `recordCompensation`, `pendingOutbox`, `closeFailedPayout`, `getCase`.
+- **B-4** Not yet built, fails closed: `ApprovedMoveRecord`, `ApprovedFundingRecord`, `putMove`, `getMove`, `putFunding`, move-id forms of `applySignal`, `markSubmit` and `findByExternalId`, and funding claims in `claimInbound` (an inbound log no case claims is the caller's P9).
+- **B-5** [inspection-only] `recordCompensation` checks the keys and refs of the caller's P7 receipts; it cannot check that the ledger posted them. Nova's adapter must derive them from the ledger's own receipts.
+
 ## Assumptions and open questions (go to docs/KHUMO_QUESTIONS.md when this delta is adopted)
 
 | ID | Item | Status |

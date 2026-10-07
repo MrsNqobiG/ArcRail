@@ -8,7 +8,7 @@ import { OpsQueue } from '../../src/ops/queue.js';
 import type { OpsActionRequest, OpsDeps } from '../../src/ops/queue.js';
 import type { CaseRecord } from '../../src/ops/types.js';
 import { deriveDecisionId } from '../../src/ops/types.js';
-import { ALICE, BOB, CLIENT_ACC, EV, FACTS_NONE, FACTS_NONE_P6, FACTS_PROVEN, FACTS_PROVEN_P6, FACTS_SENT, FACTS_UNRESOLVED, LOSS, OPT, PAY, SETTLE, SUSPENSE, SETTLEMENT, USDC, ZAR, exec, grantConsent, legs, makeRig, open, openInput, req } from './ops-support.js';
+import { ALICE, BOB, CLIENT_ACC, EV, FACTS_NONE, FACTS_PROVEN, FACTS_PROVEN_P6, FACTS_SENT, FACTS_UNRESOLVED, LOSS, OPT, PAY, SETTLE, SUSPENSE, USDC, ZAR, exec, grantConsent, legs, makeRig, open, openInput, req } from './ops-support.js';
 import type { Rig } from './ops-support.js';
 
 const under = { unit: 'USDC_UNITS' as const, expected: usdcUnits(1000n), confirmed: usdcUnits(900n) };

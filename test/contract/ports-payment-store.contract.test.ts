@@ -229,6 +229,8 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       let r = okValue(await s.create(newPayment()));
       r = okValue(await s.applySignal(PID, r.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).record;
       await expect(s.markSubmit(PID, r.version, marker({ externalId: 'nv1-short' }))).rejects.toThrow(/externalId/);
+      await expect(s.markSubmit(PID, r.version, marker({ externalId: 'nv1-' + 'ab'.repeat(20) + 'a' }))).rejects.toThrow(/externalId/);
+      await expect(s.markSubmit(PID, r.version, marker({ externalId: 'x' + 'nv1-' + 'ab'.repeat(20) }))).rejects.toThrow(/externalId/);
       await expect(s.markSubmit(PID, r.version, marker({ bodyDigest: `0x${'AB'.repeat(32)}` }))).rejects.toThrow(/bodyDigest/);
       await expect(s.markSubmit(PID, r.version, marker({ markedAt: '' }))).rejects.toThrow(/markedAt/);
       await expect(s.markSubmit(PID, r.version, marker({ markedAtBlock: -1n }))).rejects.toThrow(/markedAtBlock/);
@@ -1313,17 +1315,59 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(await t.claimInbound(log, triple)).toMatchObject({ kind: 'OK', replayed: true });
     });
 
-    it('B1: a P2R close needs the claimed return to equal the payment\'s amount A; a case of another value never closes it (the log goes to P9)', async () => {
+    it('B1/m1 (R-1): a PARTNER_RETURN case expects exactly the payment\'s A, so another value never opens; a wrong-value log goes to P9 and the exact return still closes', async () => {
       const s = make();
       const r = await payoutFailed(s);
       const open = await decide(s, 'OPEN_PARTNER_CASE', PID, { caseId: CASE });
       const half = { ...triple, value: nativeWei(500_000_000_000_000_000n) };
-      okValue(await s.putCase(partnerCase({ decisions: [open.decisionId], expected: half })));
+      expect(await s.putCase(partnerCase({ decisions: [open.decisionId], expected: half }))).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail: expect.stringMatching(/exactly the amount of payment/) });
+      expect(await s.getCase(CASE)).toMatchObject({ kind: 'REJECTED', code: 'NOT_FOUND' });
+      okValue(await s.putCase(partnerCase({ decisions: [open.decisionId] })));
+      const wrong = sig('ARC_LOG', `arc:5042002:${hex('9c')}:0`, hex('42'));
+      expect(okValue(await s.claimInbound(wrong, half)).claimedBy).toBeNull();
+      expect(okValue(await s.getCase(CASE))).toMatchObject({ state: 'OPEN', matchedLog: null });
       const log = sig('ARC_LOG', `arc:5042002:${hex('9b')}:0`, hex('41'));
-      expect(okValue(await s.claimInbound(log, half)).claimedBy).toMatchObject({ caseId: CASE, state: 'MATCHED', matchedLog: log.dedupeKey });
-      expect(await s.closeFailedPayout(PID, r.version, log, returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/expects a return of 500000000000000000, not this payment's 1000000000000000000.*P9/) });
-      expect(okValue(await s.pendingOutbox())).toEqual([]);
-      expect(okValue(await s.get(PID))).toEqual(r);
+      expect(okValue(await s.claimInbound(log, triple)).claimedBy).toMatchObject({ caseId: CASE, state: 'MATCHED', matchedLog: log.dedupeKey });
+      expect(okValue(await s.closeFailedPayout(PID, r.version, log, returnAndRelease())).outcome).toBe('APPLIED');
+      // A case for a payment that does not exist never opens either.
+      const none = deriveCaseId('PARTNER_RETURN', PID2);
+      const open2 = await decide(s, 'OPEN_PARTNER_CASE', PID2, { caseId: none });
+      expect(await s.putCase(partnerCase({ caseId: none, subject: PID2, decisions: [open2.decisionId] }))).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH' });
+    });
+
+    it('R-1 m6: only a failed FIAT_BANK payout after the Arc leg COMPLETED closes; a lone P2R is not a first close; ids and keys match the §10.2 vectors', async () => {
+      const s = make();
+      let r = await toSubmitted(s, fiatBankPayment());
+      r = okValue(await s.applySignal(PID, r.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED'), { txHash: TX }), [])).record;
+      r = okValue(await s.applySignal(PID, r.version, sig('PAYOUT_CALLBACK'), to('PAYOUT', st('SUBMITTED'), { externalRef: 'po-1' }), [])).record;
+      // A PAYOUT leg still live after the Arc leg COMPLETED is not a failure.
+      expect(await s.closeFailedPayout(PID, r.version, sig('INTERNAL'), returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/only for a FIAT_BANK payment whose PAYOUT leg failed/) });
+      // A SETTLED stablecoin payment has no PAYOUT leg at all.
+      const t = make();
+      let q = await toSubmitted(t);
+      q = okValue(await t.applySignal(PID, q.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED'), { txHash: TX }), [])).record;
+      expect(q.status).toBe('SETTLED');
+      expect(await t.closeFailedPayout(PID, q.version, sig('INTERNAL'), returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/only for a FIAT_BANK payment whose PAYOUT leg failed/) });
+      expect(okValue(await t.pendingOutbox())).toEqual([]);
+      // A lone P2R is no first close (it is the late close after P11 only).
+      const u = make();
+      const f = await payoutFailed(u);
+      await openCase(u);
+      const log = sig('ARC_LOG', `arc:5042002:${hex('9b')}:0`, hex('41'));
+      okValue(await u.claimInbound(log, triple));
+      expect(await u.closeFailedPayout(PID, f.version, log, [outbox(partnerReturnKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/closes with P6 and exactly one of P11 or P2R/) });
+      expect(okValue(await u.pendingOutbox())).toEqual([]);
+      // The same case id with another expected (to, or value) is KEY_CONFLICT, never a replay.
+      const c = okValue(await u.getCase(CASE));
+      expect(await u.putCase({ ...c, decisions: c.decisions })).toMatchObject({ kind: 'OK', replayed: true });
+      expect(await u.putCase({ ...c, expected: { ...triple, to: addr('bb') } })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT' });
+      expect(await u.putCase({ ...c, expected: { ...triple, value: nativeWei(1n) } })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT' });
+      // Literal §10.2 vectors (sha256 of the length-prefixed fields, computed outside the code under test).
+      expect(partnerClaimKey(PID)).toBe('pay:pay-01010101010101010101010101010101:p11');
+      expect(partnerReturnKey(PID)).toBe('pay:pay-01010101010101010101010101010101:p2r');
+      expect(releaseKey(PID)).toBe('pay:pay-01010101010101010101010101010101:p6');
+      expect(deriveCaseId('PARTNER_RETURN', PID)).toBe('case-298bb3c40459c5208026e9b2b8706ba9');
+      expect(deriveCaseId('NONCE_BURN', PID)).toBe('case-24000f25d403b300f81f60582dcf4bb2');
     });
 
     it('m1: a PAYOUT failure before the Arc leg started carries P6; after it COMPLETED any PAYOUT failure closes only through the F-17 close', async () => {
@@ -1418,6 +1462,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       await openCase(s);
       const case2 = deriveCaseId('PARTNER_RETURN', PID2);
       const open2 = await decide(s, 'OPEN_PARTNER_CASE', PID2, { caseId: case2 });
+      okValue(await s.create(newPayment({ paymentId: PID2, requestKey: idempotencyKey('req-two') })));
       okValue(await s.putCase(partnerCase({ caseId: case2, subject: PID2, decisions: [open2.decisionId] })));
       expect(okValue(await s.claimInbound(sig('ARC_LOG', 'arc:twin'), triple)).claimedBy).toBeNull();
       expect([okValue(await s.getCase(CASE)).state, okValue(await s.getCase(case2)).state]).toEqual(['OPEN', 'OPEN']);
