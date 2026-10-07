@@ -25,12 +25,11 @@ export interface TimelineStep {
 }
 
 /** Fact that licenses each step (the ARRIVED rule is payout dependent). */
-const STEP_FACT: Readonly<Record<Exclude<StepKind, 'ARRIVED'>, FactKind>> = Object.freeze({
+const STEP_FACT: Readonly<Record<Exclude<StepKind, 'ARRIVED' | 'SETTLED_ON_ARC'>, FactKind>> = Object.freeze({
   FUNDS_RESERVED: 'RESERVED',
   PAYIN_RECEIVED: 'PAYIN_CONFIRMED',
   CONVERTED: 'CONVERTED',
   SENT: 'ARC_SUBMITTED',
-  SETTLED_ON_ARC: 'ARC_CONFIRMED',
   PAYOUT_STARTED: 'PAYOUT_STARTED',
 });
 
@@ -67,7 +66,7 @@ function earliest(facts: readonly Fact[]): Fact | undefined {
 function licenses(step: StepKind, f: Fact, ctx: TimelineContext): boolean {
   if (!isWellFormedFact(f)) return false;
   if (step === 'ARRIVED') {
-    if (ctx.payout.method === 'FIAT_BANK') return f.kind === 'PAYOUT_COMPLETE' && f.source === 'PARTNER';
+    if (ctx.payout.method === 'FIAT_BANK') return f.kind === 'PAYOUT_COMPLETE';
     const c = f.chain;
     return (
       f.kind === 'ARC_CONFIRMED' && c !== undefined && ctx.receiverAddress !== null &&
