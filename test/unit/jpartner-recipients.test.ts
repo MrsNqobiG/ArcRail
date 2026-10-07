@@ -264,11 +264,13 @@ describe('BankRecipient: access record and immutable meta', () => {
     expect(leaks(JSON.stringify(store.accessLog(), (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v)))).toEqual([]);
     (store.accessLog() as unknown[]).length = 0; // a copy
     expect(store.accessLog().length).toBe(2);
-    await expect(store.reveal(ref, 'MARKETING' as 'PAYOUT')).rejects.toMatchObject({ code: 'INVALID_PURPOSE' });
+    await expect(store.reveal(ref, 'MARKETING' as 'PAYOUT')).rejects.toMatchObject({ code: 'INVALID_PURPOSE', message: 'reveal purpose is not valid' });
     expect(store.accessLog().length).toBe(2);
+    await store.reveal(ref, 'ERASURE_REQUEST');
+    expect(store.accessLog().length).toBe(3);
     // a reveal of a missing ref leaves no record
     await expect(store.reveal('rcp-' + 'a'.repeat(32), 'PAYOUT')).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    expect(store.accessLog().length).toBe(2);
+    expect(store.accessLog().length).toBe(3);
   });
   it('meta is frozen: retention and routing facts cannot be changed through it', async () => {
     const { store } = makeStore(10_000n, new Clock(1n));

@@ -1,245 +1,280 @@
-VERIFICATION · lens: R · target: unit NET (src/network/**, src/indexer/**, test/unit/net-indexer.test.ts, test/unit/net-arc-adapter.test.ts, test/unit/net-boundary.test.ts, test/contract/net-adapter.contract.test.ts) · commit: 27774147e485ac38d084a429c2b6856a7a391cc3 (branch co1-v3/nova-arc-d1). The NET fix for the 11:10 report is uncommitted in the working tree: `src/indexer/indexer.ts`, `src/network/{types.ts,arc/config.ts,fake/adapter.ts}` and three NET test files. The sha256 of the NET sources and tests, concatenated in sorted path order, is 2e91a2afd945e5c3a913a083a8c67e03311ad884b6aa59d4f9b2f870f528b366. It was the same at the start and at the end of the pass, and a `cmp` of every NET file against my scratch copy found no difference.
+VERIFICATION · lens: R · target: unit NET (src/network/**, src/indexer/**, test/unit/net-indexer.test.ts, test/unit/net-arc-adapter.test.ts, test/unit/net-boundary.test.ts, test/contract/net-adapter.contract.test.ts) · commit: 6ef160f047f069aaa421c433dc1d9f3bb8a81652 (NET files identical in 07e9950 and 6ef160f; `git diff 07e9950 6ef160f` over NET sources, tests and NET design docs is empty)
 
-**Pass details.** An independent verifier subagent ran this pass on 2026-10-07, 13:49–14:06. It is Lens R round 1, re-run 3, on the unit as fixed after the 11:10 report. It replaces that report; its m1–m7 are re-checked in the status table at the end.
+**Pass details.** An independent verifier subagent ran this pass on 2026-10-07, 14:40–15:00. It is Lens R round 1 (re-run 4), on the NET code as committed in 07e9950. It replaces the 14:07 report, which is kept in git history (07e9950). I did not rely on that report or on the author's comments: every check below was re-run or re-derived in this pass.
+
+**Fingerprint.** sha256 over the NET sources and tests, concatenated in sorted path order: `2e91a2afd945e5c3a913a083a8c67e03311ad884b6aa59d4f9b2f870f528b366`. The value was the same at the start and at the end of the pass, and it matched the scratch copy.
 
 **Inputs.**
-- docs/NOVA_ARC_DESIGN.md §3, §5, §6, §10.3 (DELTA-1 changes nothing in NET)
-- CLAUDE.md, docs/RUBRIC.md (MC-15, MC-16, MC-19, MC-31), docs/constants.md, docs/MONEY_PATH.md, docs/OPEN_QUESTIONS.md, ADR-002
-- the archived Arc and DFNS sources
+- docs/NOVA_ARC_DESIGN.md §2, §3, §5, §6 (6.1–6.7), §10.3
+- CLAUDE.md money rules, docs/RUBRIC.md (MC-01, 02, 03, 07, 08, 15, 16, 19, 20, 21, 31, 33), docs/constants.md, docs/MONEY_PATH.md, docs/OPEN_QUESTIONS.md, ADR-002
+- the archive under docs/sources (arc/, dfns/)
 - the code and the tests
 
-I did not trust the author's comments or the earlier reports.
-
-**Guard rules (I applied them myself):**
-- I made no call to any Arc, DFNS, Circle or VALR endpoint and read no .env file. I checked facts only against the archive.
-- Scratch work went into `mktemp -d` → `/tmp/verify-NET-R1c-VtZw4y`. It holds a real-file copy of the repo, made with tar and without `.git`, `.tools`, `reports` or the Stryker temp dirs. `find -lname '/*'` found no absolute symlink in it. The only link I made is `plant/node_modules → ../node_modules`, which stays inside the scratch dir.
+**Guard rules (applied by me).**
+- I made no call to the DFNS, Circle, VALR or Arc RPC endpoints and read no .env file. I signed and broadcast nothing.
+- The only network reads were six public documentation pages (docs.arc.io ×4, docs.dfns.co ×2), fetched for the MC-21 re-check. I did **not** run `tools/source_drift.py`, because MANIFEST.md also lists hosts outside the three allowed doc sites (fic.gov.za, gov.za, resbank.co.za, inforegulator.org.za).
+- Scratch work was done in `mktemp -d` → `/tmp/verify-NET-R1d-SyOSEn`. It is a real-file tar copy of the repo, without `.git`, `.tools`, `reports`, `coverage`, `dist` or the `.stryker-tmp*` dirs. `find -lname '/*'` found no absolute symlink in it. The only link is `plant/node_modules → ../node_modules`, which points to the scratch copy, not the repo.
 - Node came from `.tools/node/bin` (v22.23.3).
-- Stryker ran in the scratch copy with `--tempDirName .stryker-tmp-verify-NET --reporters clear-text`. Its temp dir was cleaned, and I deleted the whole scratch dir after the pass. I did not run the full ci.sh, and I wrote nothing to the repo except this report.
+- Stryker ran in the scratch copy with `--tempDirName .stryker-tmp-verify-NET --reporters clear-text,json`. Stryker removed its own temp dir. I did not run `scripts/ci.sh`. This report is the only file I wrote to the repo.
+- Following the operator's "without deleting anything", I left the scratch dir in place (/tmp, about 283 MB).
 
 ## CHECKS
 
 ### Mechanical (reconstructed)
-- **tsc.** `npx tsc --noEmit` → exit 0. **PASS**
-- **NET tests.** The 4 NET files run **163/163** and pass. That is 6 more than at 11:10: the poll-receipt and INVALID_ADDRESS tests. **PASS**
-- **MC-01 float lint.** `node tools/lint-money-floats.mjs` → "47 money-path files, 4 finding(s)", exit 1. All 4 findings are in `src/history/index.ts` (lines 151, 160, 216 and 223, unit HIST, another agent's work in progress), and **none are in a NET file**. Not charged to NET. NET **PASS**
-- **Semgrep MC-01 layer.** I ran `tools/semgrep/mc01-money-float.yml` with `--no-git-ignore` on all 12 NET source files: 13 rules, **0 findings**. **PASS**
-- **Semgrep vendored JS/TS rules.** 203 rules on the 12 NET sources and the 4 NET test files → **0 findings**. **PASS**
-- **`test/unit/money-path.test.ts`.** 3 of its tests fail, all in other units:
-  - MONEY_PATH lists `src/history/index.ts`, `src/journey/payout/partner/*.ts` (5 files) and `src/journey/recipients/index.ts`, and the Stryker `mutate` list does not include them yet.
-  - `src/journey/recipients/index.ts` imports `node:util`, which is not on the allow-list.
+- **tsc.** `npx tsc --noEmit` (scratch) → exit 0. **PASS**
+- **NET tests.** The 4 NET files run **163/163**, all passing. With `mainnet-gate.test.ts` added the count is 205/205. **PASS**
+- **MC-01 float lint.** `node tools/lint-money-floats.mjs` → "51 money-path files, 0 finding(s)", exit 0. **PASS**
+- **Semgrep MC-01 layer.** `tools/semgrep/mc01-money-float.yml`, run with `--no-git-ignore --error` on the 12 NET source files: 13 rules, **0 findings**, exit 0. **PASS**
+- **Semgrep vendored JS/TS rules** (a84ff9cc…): 203 rules on the 12 NET sources and 4 NET tests → **0 findings**, exit 0. **PASS**
+- **MC-07 coverage.** v8 coverage over the NET tests only (scratch):
 
-  All 8 NET paths are in both lists. Not charged to NET; route the fix to HIST and JPARTNER.
-- **Mainnet gate.** `test/unit/mainnet-gate.test.ts` passes. A grep for `5042` other than `5042002`, and for `'Arc'`, in NET finds only `DFNS_ARC_NETWORKS.mainnet { name: 'Arc', enabled: false }` (config.ts:28). The 11:10 probe of the refusal paths still holds on unchanged code (config.ts:76–92): `MainnetGateError` without the single-source flag, `ArcConfigError` with it. **PASS**
-- **MC-07 coverage.** v8 coverage, NET tests only, in the scratch copy. All 8 money-path files score **100/100/100/100** (lines, branches, functions, statements), and so do `arc/config.ts` and `fake/adapter.ts`. The only gaps are in the test fakes `indexer/fakes.ts` (one branch) and `arc/blocklist-fakes.ts` (one function), which are not on the money path. **PASS**
-- **MC-08 Stryker, NET files only.** It mutated all 10 NET non-fake sources: `network/types`, `arc/{params,adapter,config}`, `fake/adapter`, and `indexer/{rpc,fetch,indexer,decode,store}`. Vitest was narrowed to the 4 NET test files through a scratch config. Score **98.58 %**: 1,436 killed, 18 timeouts, 21 survived, 0 no-coverage, break threshold 90. **PASS**
+  | File | Lines / branches / functions / statements |
+  |---|---|
+  | decode | 100 / 100 / 100 / 100 |
+  | fetch | 100 / 100 / 100 / 100 |
+  | indexer | 100 / 100 / 100 / 100 |
+  | rpc | 100 / 100 / 100 / 100 |
+  | store | 100 / 100 / 100 / 100 |
+  | network/types | 100 / 100 / 100 / 100 |
+  | arc/adapter | 100 / 100 / 100 / 100 |
+  | arc/config | 100 / 100 / 100 / 100 |
+  | arc/params | 100 / 100 / 100 / 100 |
+  | fake/adapter | 100 / 100 / 100 / 100 |
 
-  I adjudicated all 21 survivors by reasoning, and every one is equivalent.
+  The only gaps are in test fakes, which are not on the money path: `indexer/fakes.ts` (branches 99.1, line 147) and `arc/blocklist-fakes.ts` (one function, line 29). **PASS**
+- **MC-08 Stryker, NET files only.** Mutated: `network/types`, `arc/{params,adapter,config}`, `fake/adapter` and `indexer/{rpc,fetch,indexer,decode,store}`. Vitest was narrowed to the 4 NET test files by a scratch config. Results: 1,475 mutants, **score 98.58 %** (1,436 killed, 18 timeouts, 21 survived, 0 no-coverage, 0 errors). Break threshold is 90. **PASS**
 
-  The 16 already adjudicated at 11:10, re-confirmed on today's code:
-  - `'utf8'` → `""` in decode.ts:123 (Node's default encoding).
-  - `end < to` → `<=` in pageRange.
-  - `raw < cap` → `<=` in backoffDelay.
-  - `r.kind === 'ERROR'` → `true` (EXHAUSTED has no `code`).
-  - `toLowerCase` → `toUpperCase` in `text()`.
-  - In inChainOrder: `logIndex <` → `<=`, and `...sorted`.
-  - `lowest` `<` → `<=`.
-  - `first === second` → `false`.
-  - In readHeads: `<` → `<=` and `>` → `>=`.
-  - `missing.every` → `some`. There are at most two sources.
-  - `d.kind === 'CANONICAL'` → `true` in receiptCarries.
-  - The two `PRECOMPILE_RE` anchors.
-  - The `^\d+$` anchor in dfnsAmount: a bigint's decimal text is either digits or `-digits`.
+  I adjudicated all 21 survivors from their exact source spans in the JSON report. Each is equivalent:
+  - The `'utf8'` → `""` mutants (decode.ts:123, fake/adapter.ts:51, fake/adapter.ts:185) are equivalent because Node's default input encoding is utf8.
+  - fetch.ts:35 `end < to` → `<=`, fetch.ts:46 `raw < cap` → `<=`, indexer.ts:143 `x < low` → `<=`, :248 `<` → `<=`, :249 `>` → `>=`, and :119 `logIndex <` → `<=` are equivalent: equal values pick the same result, and the merged keys are unique.
+  - fetch.ts:109, span `[r.kind === 'ERROR']` → `true`: equivalent, because an EXHAUSTED result has no `code`, so `includes(undefined)` is false.
+  - indexer.ts:76 `toLowerCase` → `toUpperCase`: equivalent, because the same transform is applied to both sides of every comparison.
+  - indexer.ts:121, span `[sorted.filter((y) => before(x, y))]` → `sorted`: this one is not equivalent in its intermediate state. It duplicates earlier logs, but the duplicates carry the same dedupe key and digest, so the store folds them into one row. At worst an extra ERC-20 copy produces UNKNOWN_EVENT, which fails closed. No money effect.
+  - indexer.ts:167, span `[first === second]` → `false`: equivalent. The same object has the same name, so the name check still refuses it (test l.425).
+  - indexer.ts:414 `missing` initial value: equivalent, because `maxAttempts ≥ 1` and the array is reassigned before it is read.
+  - indexer.ts:437 `every` → `some`: equivalent, because when a receipt was found, `missing` holds at most one source (two sources at most).
+  - indexer.ts:457, span `[found === null]` → `false`: equivalent, because `found === null` implies that `missing` is non-empty. The other :457 survivor, `'MISSING'` → `""`, is also equivalent: both consumers test only `kind === 'ALL'`.
+  - indexer.ts:522 `d.kind === 'CANONICAL'` → `true`: equivalent, because a non-canonical decode has no `value`.
+  - arc/adapter.ts:63, both `PRECOMPILE_RE` anchors: equivalent, because the input has already been checked to be exactly `^0x[0-9a-f]{40}$`.
+  - types.ts:258 `^\d+$` → `^\d+`: equivalent, because a bigint's decimal text is either digits or `-digits`.
+- **Planted mutants (my own, in `plant/`, NET tests after each, bail on first failure).** **35/35 killed**, plus 1 control. The control, M00 (`end <= to`, known to be equivalent), SURVIVED, which shows that the harness can report a survivor. The 35:
+  - M01: the ERC-20 emitter made canonical
+  - M02: the pairing check skipped
+  - M03: pairing ignores the value
+  - M04: one canonical log pairs two ERC-20 logs
+  - M05: `logIndex` dropped from the dedupe key
+  - M06: an unknown error made non-sticky
+  - M07: an unknown error read as "no logs"
+  - M08: `-32014` not retried
+  - M09: the agreed head is the highest
+  - M10: no CHAIN_STALL
+  - M11: RPC_DISAGREEMENT not sticky
+  - M12: the stored halt not checked
+  - M13: the cursor skips a block
+  - M14: pages of 10,000 blocks
+  - M15: status 0 credited
+  - M16: a log present only on the reference is missed
+  - M17: the same approver twice is allowed
+  - M18: the blocklist age check made 1,000× looser
+  - M19: confirmTx above the head
+  - M20: confirmTx returns null on a missing source
+  - M21: FakeNet does not dedupe
+  - M22: non-zero topic padding accepted
+  - M23: a log touching none of ours accepted
+  - M24: a foreign receipt accepted
+  - M25: `value` dropped from the digest
+  - M26: SIGNAL_CONFLICT ignored
+  - M27: FakeNet dust accepted
+  - M28: a self-transfer accepted
+  - M29: receiptCarries skipped
+  - M30: the single-source flag allowed with mainnet
+  - M31: the split is not a halving
+  - M33: CURSOR_CONFLICT ignored
+  - M34: unlimited head regression
+  - M35: poll returns only `[]`
+  - M36: FakeNet ack is partial
 
-  The 5 that are new this round:
-  - indexer.ts:414, `missing` initialised to `["Stryker was here"]`. The loader enforces `maxAttempts ≥ 1`, so the loop body always runs, and every iteration that does not return reassigns `missing` before the value is read.
-  - indexer.ts:457, `found === null ||` → `false`. With at least one source, `found === null` implies that every source returned null, so `missing.length > 0` already holds.
-  - indexer.ts:457, `'MISSING'` → `""`. Both consumers test only `kind === 'ALL'`.
-  - Two `'utf8'` → `""` mutants in fake/adapter.ts (lines 51 and 185). This file was not in the mutate set at 11:10.
-- **Secrets and real calls.** gitleaks on a /tmp copy of every NET file → "no leaks found". A grep for `fetch(`, `http(s)://`, `process.env`, privateKey, mnemonic, secret, apiKey and token across the NET sources and tests → **no hits**. **PASS**
-- **My own planted mutants.** I planted 34 mutants in a second scratch copy (`plant/`) and ran the NET tests after each one. **34/34 killed.** **PASS**
-  - Control: the known-equivalent `end <= to` survived, which shows that the harness can report a survivor.
-  - The 14 that target this round's changes:
-    - P1: pollReceipt accepts a receipt that only one source has
-    - P2: no retry
-    - P3: no backoff sleep
-    - P4: readReceipt reports ALL while a source is missing
-    - P5: pollReceipt swallows a readReceipt failure and retries
-    - P6: SOURCE_LAGGING made sticky
-    - P7: INVALID_ADDRESS made sticky
-    - P8: pollAddresses skips a malformed address
-    - P9: pollAddresses keeps the raw case
-    - P10: pollAddresses does not dedupe
-    - P11: the address check runs after the head read
-    - P12: the tolerance default is restored (the `typeof` guard is removed)
-    - P13: FakeNet skips the address check
-    - P14: agreedReceipt treats a missing source at or above the block as "not yet"
-  - The 20 that target core properties:
-    - P15: a log touching none of ours accepted
-    - P16: lone ERC-20 tolerated
-    - P17: status ≠ 1 credited
-    - P18: an unknown getLogs error read as "no logs"
-    - P19: RPC_DISAGREEMENT not sticky
-    - P20: chainId dropped from the dedupe key
-    - P21: agreed head = highest
-    - P22: stall boundary `>=` → `>`
-    - P23: the receipt need not carry the log
-    - P24: a log present only on the second source ignored
-    - P25: the ERC-20 emitter made canonical
-    - P26: confirmTx ignores confirmations
-    - P27: a foreign receipt accepted
-    - P28: two different logs at one key accepted
-    - P29: SIGNAL_CONFLICT ignored
-    - P30: one source allowed without the flag
-    - P31: a same-height hash change accepted
-    - P32: an out-of-range log accepted
-    - P33: the ERC-20 value check dropped from pairing
-    - P34: confirmTx skips a malformed system log
+  **PASS**
+- **Secrets and real calls.** gitleaks `detect --no-git` on a /tmp copy of every NET file → "no leaks found". A grep for `fetch(`, `http(s)://`, `process.env`, privateKey, mnemonic, secret, apiKey, token, Bearer and `.env` across the NET sources and tests found **no hits**. **PASS**
+- **Mainnet (MC-20 slice).** Two greps over NET:
+  - `5042` other than `5042002` → none;
+  - `'Arc'` → only `DFNS_ARC_NETWORKS.mainnet { name: 'Arc', enabled: false }` (config.ts:28).
 
-### Numbers and units (recomputed by hand, confirmed by running the code)
-- **U1 round trip, `toNetworkAmount(m, p) = m × 10^(18−p)`** (via `cbsMinorToNativeWei`). Every case equals my hand value (probe V7). **PASS**
+  In config.ts:76–92, mainnet without the flag goes through U2's gate (`resolveChain`), and then `chainId !== testnetId` throws anyway. Mainnet together with the flag gives ArcConfigError. Tests net-arc-adapter l.85–92 and my mutant M30 confirm this. The indexer constructor (indexer.ts:159) and precheck (adapter.ts:288) re-pin 5042002 / `ArcTestnet`. `mainnet-gate.test.ts` passes. **PASS**
+- **Agnosticism lint (§3).** `net-boundary.test.ts` passes. A grep finds no module outside `src/network/**` or `src/indexer/**` that imports `network/arc` or `indexer/`. **PASS**
+- **Contract tests on both implementations (§5.3).** `describe.each` runs one suite on ArcNetworkAdapter (two in-memory chains) and on FakeNetAdapter. It covers every item §5.3 lists: U1 round trip, idempotent poll, dedupe of a re-delivered transfer, cursor resume after a crash, disagreement, stall, unknown event and precheck refusals. It also covers ack, partial-commit loss, CURSOR_CONFLICT and a restart that keeps the halt. M21, M27 and M36 (FakeNet mutants) were killed. **PASS**
 
-  | m | p | Expected (= result) |
+### Numbers and units (recomputed by hand, then confirmed by running the code)
+- **U1, `toNetworkAmount(m, p) = m × 10^(18−p)`**, run through ArcNetworkAdapter (probe V7). Every row equals my hand value. **PASS**
+
+  | m | p | Result |
   |---|---|---|
   | 0 | 2 | 0 |
   | 1 | 2 | 10¹⁶ |
-  | 12,345 | 2 | 1.2345 × 10²⁰ |
+  | 12,345 | 2 | 123,450,000,000,000,000,000 |
   | 1 | 6 | 10¹² |
   | 999,999,999 | 0 | 999,999,999 × 10¹⁸ |
   | 7 | 15 | 7,000 |
   | 1 | 18 | 1 |
+- **Two-log ERC-20 fixture (MC-15), probe V1, on both store fakes.** Hand value: 1,500,000 units × 10¹² = 1,500,000,000,000,000,000 wei. Result: **one** transfer of exactly that amount at log index 0 (the system log), `pending()` = 1, and the second poll still returns 1 (no duplicate). **PASS**
+- **Paging (C-40).** By hand, `pageRange(1, 25000, 9999)` gives 1–9,999, then 10,000–19,998, then 19,999–25,000, so every page has `to − from ≤ 9,998`. U2 `getLogsMaxBlocksPerPage = 9_999n`. Mutant M14 was killed. **PASS**
+- **Backoff (C-42, values ours, Q-N6).** Policy 250 ms, cap 8 s, 8 attempts. By hand, `d = min(8000, 250·2ⁱ)` for i = 0…6 gives 250, 500, 1000, 2000, 4000, 8000, 8000. The minimum jitter `d/2` gives 125, 250, 500, 1000, 2000, 4000, 4000. That matches the code's formula, and the test pins it. **PASS**
+- **Fee constants carried.** `feeFloorWei` = 20 gwei = 2×10¹⁰ (C-30). `maxBaseFeeWei` = 20,000 gwei = 2×10¹³ (C-31). Both are read from U2 unchanged. **PASS**
 
-- **Two-log ERC-20 fixture (MC-15), probe V1.** On JournalIndexerStore, 1,500,000 units × 10¹² = 1,500,000,000,000,000,000 wei. The result is **one** transfer of exactly that amount at log index 0 (the canonical log), and `pending()` holds 1 item. **PASS**
-- **Poll-receipt backoff, reconstructed** (250 ms initial, 8 s cap, 8 attempts, so 7 sleeps, minimum jitter from ManualTiming): 125, 250, 500, 1000, 2000, 4000, 4000. That equals the test's `timing.slept`, and the range is [d/2, d] for each d = min(8000, 250 × 2ⁱ). **PASS**
-- **Paging (C-40).** `pageRange(1, 25000, 9999)` → `1-9999`, `10000-19998`, `19999-25000`. Every page has `to − from ≤ 9,998`. **PASS**
+### Arc / DFNS facts: archive re-checked, integrity verified, live page diffed
+Archive integrity: the recomputed sha256 matches MANIFEST.md for all 9 archive files NET relies on.
 
-### Arc / DFNS facts (re-checked against the archive; no live fetch)
-- **C-42 and the new citation "rpc-endpoints.md lines 40, 119".** `arc_references_rpc-endpoints.md` l.39–40: "load-balanced across multiple backends that may be at slightly different block heights". l.119: "the backend that reported the current head may differ from the one serving this request". Matches. **PASS**
-  - [inspection-only] The fix's comment (indexer.ts:36–38, 406–410) says that a missing receipt "is a load-balanced backend that has not imported the block". The archive documents only `-32014` for such a backend. That `eth_getTransactionReceipt` returns `null` for an unknown hash is generic JSON-RPC behaviour, not an Arc claim, and the control fails closed whichever way it is read. I do not count it as an invented fact.
-- **C-40.** "`-32012` when the requested block range exceeds 10,000 blocks … ≤9,999-block chunks", l.105–108. **PASS**
-- **C-20, C-21, C-22, C-24.** `arc_references_usdc-system-events.md` contains:
-  - the emitter `0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE` (l.35, 64);
-  - "A single ERC-20 `transfer()` emits **two** logs" (l.39);
-  - topic0 `0xddf252ad…b3ef` (l.66, 98);
-  - "Zero-value transfers emit no log." and "Self-transfers (`from == to`) emit no log." (l.78–79). These rules are stated for the **system** log only.
+| Fact | Archive evidence | Live 2026-10-07 14:49 | Result |
+|---|---|---|---|
+| C-01 `5042002` | rpc-endpoints.md l.64 | quote unchanged | PASS |
+| C-40 `-32012` / ≤9,999 | rpc-endpoints.md l.105–108, l.118 | unchanged (the page differs only in WebSocket URLs and a status-page sentence) | PASS |
+| C-42 `-32014` retry; load-balanced backends | rpc-endpoints.md l.40–44, l.119 | unchanged | PASS |
+| C-20 emitter, C-21 topic0, C-22 two logs, C-24 zero-value and self-transfer | usdc-system-events.md l.35, 39, 64, 66, 78–79 | page **identical** to archive | PASS |
+| C-12 `0x3600…0000`, 6 dp | contract-addresses.md l.48 | unchanged (live page adds an ERC-8183 section) | PASS |
+| C-50 no reorgs | deterministic-finality.md l.26 | page **identical** | PASS |
+| C-27 `tx.from` relayer, C-15 raw 18 dp | deposits.md l.209, 289–290 | archive only | PASS |
+| C-28 `Blocklisted` / `UnBlocklisted` | indexing-events.md l.287–288 | archive only (UNVERIFIED per constants, Q-A5) | PASS (cited as unverified) |
+| DF:networks "\| Arc \| ArcTestnet \| 1 \| N/A \| 10 \| \| \|" | dfns/networks_index.md l.34 (Confirmation Delay column l.29) | page **identical** | PASS |
+| DF:transfer: `Native`, `^\d+$`, minimum denomination, `Standard`, externalId 1–50 | transfer-asset.md l.9, 101, 107, 124, 165–166 | unchanged (live page adds an Authentication / Permissions block) | PASS |
 
-  **PASS**
-- **C-12.** `arc_references_contract-addresses.md` l.48: `0x3600…0000` "Uses 6 decimals". **PASS**
-- **DF:networks.** `dfns/networks_index.md`: "| Arc | ArcTestnet | 1 | N/A | 10 | | |", with the Confirmation Delay column defined in the header row. **PASS**
-- **DF:transfer.** `dfns/api-reference_wallets_transfer-asset.md` has "minimum denomination" (l.9, 51), `Native` (l.101), `^\d+$` (l.107), `Standard` (l.124) and `externalId` minLength 1 / maxLength 50 (l.165–166). **PASS**
-- **Cited identifiers.** The C-ids cited in NET are rows in constants.md:
-  - C-01, C-12, C-15
-  - C-20, C-21, C-22, C-24, C-25, C-27, C-28
-  - C-40, C-41, C-42
-  - C-50, C-53, C-54
+U2 values (src/chain/config l.82–99) equal the archive: chainId, ERC-20 address, emitter, topic0, 9,999, -32012, -32014 and -32602 (C-41, UNVERIFIED, Q-A4). **No invented DFNS or Arc fact found.** **PASS**
 
-  **I found no invented DFNS or Arc fact.** **PASS**
+### Logic re-trace (§6 money path)
+- **§6.1 canonical-only credit.**
+  - Only `kind: 'CANONICAL'` logs (emitter = C-20) become transfers (indexer.ts:369, 400).
+  - Each ERC-20 log must pair 1:1 with a canonical log in the same tx, with the same `from`/`to` and value × 10¹² via U1 (decode.ts:98–109). Otherwise → UNKNOWN_EVENT.
+  - `from`/`to` come from the topics (decode.ts:84–86).
 
-### Logic re-trace of this round's changes
-- **Poll receipt (11:10 m1).** `pollReceipt` (indexer.ts:412–423) accepts a receipt only when **every** source returns the same one (`kind: 'ALL'`). That receipt has already passed the status and foreign-transaction checks in `readReceipt` (:459–466), and afterwards it must still match the log's block, have status 1 and carry the credited log (:391–397).
-  - A source without it is retried with the `-32014` backoff. When still missing → SOURCE_LAGGING (not sticky): nothing is committed for that page, and no cursor moves.
-  - Two different receipts in any attempt → RPC_DISAGREEMENT, sticky (P5 killed).
-  - An unknown RPC error during a retry → SOURCE_STOPPED, sticky (probe V4).
+  Killed: M01–M04, M22, M23. **PASS**
+- **§6.2 faults.**
+  - `-32012`/`-32602` halve and never widen; one block that still fails → RANGE_UNRECOVERABLE, sticky (fetch.ts:174–182).
+  - `-32014` and transport errors retry with backoff; when exhausted → SOURCE_LAGGING, not sticky.
+  - Any other code → SOURCE_STOPPED, sticky (fetch.ts:183, indexer.ts:71).
+  - A log outside the requested range → SOURCE_STOPPED.
+  - Probe V4: `-32603` on the reference's getLogs only gives FAILED SOURCE_STOPPED, the halt is stored, 0 pending, the cursor stays null, and the next poll is still FAILED.
+  - Probe V6: `-32014` × 8 on head → SOURCE_LAGGING with no halt; `-32012` on a 4-block page gave ranges 1-4, 1-2, 3-4, 1-4 and the log was delivered.
 
-  Fail-closed is preserved. **PASS**
-- **confirmTx is unchanged in behaviour.** `agreedReceipt` (:431–439) still returns OK null only when no source has the receipt, or when every source without it reports a head below the receipt's block. Otherwise → RPC_DISAGREEMENT (probe V6, P14). **PASS**
-- **INVALID_ADDRESS (11:10 m6).** `pollAddresses` (types.ts:226–234) lower-cases and dedupes each address, and returns INVALID_ADDRESS for the first value that is not a 20-byte hex address. It is shared by both adapters.
-  - In the indexer it runs inside `run()`, so a stored halt is still reported first (probe V2).
-  - It runs before any source read (the test counts 0 calls; P11 killed).
-  - It is not sticky (P7 killed).
-  - No consumer outside NET switches on `NetworkFailure`, so the wider union breaks nothing (grep).
+  Killed: M06–M08, M31. **Never "no logs."** **PASS**
+- **§6.3 two sources.**
+  - The constructor requires 2 distinct sources; 1 only with the flag (indexer.ts:162–169).
+  - The log sets are compared both ways on full content, including block hash (indexer.ts:541–549).
+  - Heads at one height with different hashes → RPC_DISAGREEMENT (indexer.ts:247).
+  - Receipts are compared by fingerprint.
+  - Probe V8: different log content → RPC_DISAGREEMENT, sticky, cursor frozen at 1.
 
-  **PASS**
-- **Head-regression tolerance (11:10 m5).** It is now required, with no default: the type makes it mandatory, and a runtime `typeof` check throws `ArcConfigError` (config.ts:240–242; P12 killed). **PASS**, but the question row was not added; see m4.
-- **Unchanged since 11:10, re-confirmed by mutants and probes:**
-  - §6.1 canonical-only credit: P15, P16, P25, P33
-  - §6.2 faults: P18, P32 and V5 (an unknown getLogs error on the reference only → SOURCE_STOPPED, 0 pending)
-  - §6.3 two sources: P19, P24, P28, P30, P31
-  - §6.4 exactly once: P20, P29
-  - §6.5: P17, P23, P26, P27
-  - §6.6: P21, P22
-  - precheck and reuse of U1/U2: unchanged code, 100 % mutation score on config.ts
+  Killed: M09, M11, M16, M20. **PASS**
+- **§6.4 exactly once.**
+  - Dedupe key `arc:5042002:<txHash>:<logIndex>` (types.ts:243–245) is the §10.3 key.
+  - The digest projection matches the §10.3 list. The keys are sorted (blockHash, chainId, from, logIndex, status, to, txHash, value), and I checked the order by hand.
+  - Page and cursor commit in one call, with compare-and-set (indexer.ts:318–321).
+  - The same key with a different digest → SIGNAL_CONFLICT → RPC_DISAGREEMENT.
+  - Probe V5: an INTERNAL transfer read by two cursor groups, acknowledged once, gives 1 inbox row and is not re-delivered.
 
-  **PASS**
-- **"Raise PAUSE".** NET returns typed FAILED results, documented as "FAILED always means: PAUSE outbound and page a human". Mapping FAILED onto the rail state belongs to the D1 orchestrator and composition root (S3), which do not exist yet. **[inspection-only]**, not charged to NET. It must be proven when S3 is generated.
+  Killed: M05, M13, M25, M26, M33, M35. **PASS**
+- **§6.5 confirmation.**
+  - Status must be 1 (else UNKNOWN_EVENT); the receipt must be in the same block and must carry the credited log; foreign receipts are refused.
+  - `confirmTx` returns null above `head − confirmations`.
+  - A status-0 receipt is returned with its gas and no transfers.
+
+  Killed: M15, M19, M24, M29. **PASS**
+- **§6.6 liveness.** No source advances for `stallAfterMs` → CHAIN_STALL. One source frozen → SOURCE_LAGGING. Neither is sticky, and both are stored with the stream. Probe V8 confirms that CHAIN_STALL clears once a block arrives. Killed: M10, M34. **PASS**
+- **"Raise PAUSE".** NET returns typed FAILED results, documented at types.ts:48 as "FAILED always means: PAUSE outbound and page a human". The sticky kinds freeze the cursors until two distinct approvers resume. Writing the rail PAUSE state belongs to the D1 orchestrator / composition root (design §3 S3). Today the gateway reads it (`RAIL_PAUSED`, gateway/index.ts:456), and `COMPOSITION_ROOTS` is empty. **[inspection-only] PASS at the NET boundary.** It must be proven when S3 is generated.
+- **MC-16 "-32603 Blocked address classified exactly".** C-57 is about `eth_call`/`eth_estimateGas`, which NET never issues. On NET's reads, `-32603` is unknown → SOURCE_STOPPED (probe V4). Not applicable to NET; it belongs to the gateway / simulation unit.
 
 ### Rubric items applicable to NET
-- MC-01 PASS (NET)
-- MC-02 PASS
-- MC-03 PASS
-- MC-07 PASS
-- MC-08 PASS (98.58 %)
-- MC-15 PASS
-- MC-16 PASS
-- MC-21 PASS
-- MC-33 PASS
-- **MC-19: FAIL** (m3, routed): the test "same identity twice → refused" passes, but the approvers are not authenticated in NET.
-- **MC-31: FAIL** (m1, routed)
+| Item | Result |
+|---|---|
+| MC-01 | PASS |
+| MC-02 | PASS (amounts are U1 brands only; tsc clean) |
+| MC-03 | PASS (only U1 converts: `cbsMinorToNativeWei`, `usdcUnitsToNativeWei`) |
+| MC-07 | PASS |
+| MC-08 | PASS (98.58 %) |
+| MC-15 | PASS |
+| MC-16 | PASS (for NET reads) |
+| MC-20 | slice PASS |
+| MC-21 | PASS for NET citations |
+| MC-33 | slice PASS (SAST 0, gitleaks 0) |
+| **MC-19** | **FAIL → m3** |
+| **MC-31** | **FAIL → m1** |
 
-## PROBES (plant/test/unit/zz-verify-net.test.ts; observed results)
-- **V1.** `OK`, 1 transfer, amount `1500000000000000000`, log index 0, pending 1. **PASS**
-- **V2.** A halted indexer (sources disagree), then a poll with `'0x12'` → `RPC_DISAGREEMENT`: the stored halt comes before INVALID_ADDRESS. **PASS**
-- **V3.** One source's receipt is missing on every read, over 3 polls → `SOURCE_LAGGING` × 3, halt `null`, 21 sleeps (7 per poll). The rail stays failed for as long as the condition lasts. It never escalates to a sticky halt, but nothing is delivered. → Candidate C1, DISMISSED (below).
-- **V4.** The receipt is missing, then a `-32000` error arrives during a retry → `SOURCE_STOPPED`, stored as the halt. **PASS**
-- **V5.** An unknown error (`-32603`) on the reference's getLogs only → `FAILED SOURCE_STOPPED`, 0 pending. **PASS**
-- **V6.** confirmTx where the reference lacks the receipt and its head is above the block → `RPC_DISAGREEMENT`. **PASS**
-- **V7.** The U1 table above. **PASS**
+## PROBES (plant/test/unit/zz-verify-net.test.ts, observed)
+- **V1.** Two-log ERC-20 on MapIndexerStore and JournalIndexerStore → 1 transfer, 1,500,000,000,000,000,000 wei, log index 0, pending 1, no duplicate on re-poll. **PASS**
+- **V2.** confirmTx: the reference's head has reached block N, but its `getReceipt` returns null (C-42: a load-balanced backend behind the one that answered `head`). Result: `FAILED RPC_DISAGREEMENT`, **stored as a sticky halt**. The same condition in poll gives `SOURCE_LAGGING`, halt null. → **m6**
+- **V3.** A lone **zero-value** ERC-20 `Transfer` X→ours (no system log), status 1. Result: `FAILED UNKNOWN_EVENT`, stored halt. Resume with ('alice', 'alice') is refused; ('alice', 'bob') clears it. → confirms **m2**
+- **V4.** An unknown `-32603` on the reference's getLogs → SOURCE_STOPPED, sticky, 0 pending, cursor null. **PASS**
+- **V5.** INTERNAL A→B, A indexed and acked first, then B added from `startBlock` → 0 re-delivered, 1 inbox key. **PASS**
+- **V6.** `-32014` × 8 on head → SOURCE_LAGGING, not sticky. `-32012` on a 4-block page splits it, and the log is delivered. **PASS**
+- **V7.** The U1 table. **PASS**
+- **V8.** CHAIN_STALL after 30 s with no block, no halt. Then different log content → RPC_DISAGREEMENT, sticky, cursor 1. **PASS**
 
 ## CANDIDATES considered and dismissed
-- **C1 · A persistent missing receipt never escalates** (V3, indexer.ts:412–423). Design §6.2 says that exhausted lag is "treat that source as lagging, which feeds stall/disagreement logic". The result is FAILED, so outbound stays paused and a human is paged on every poll. It auto-clears only when every source returns the same validated receipt. No money path is weakened. **DISMISSED**
-- **C2 · INVALID_ADDRESS pauses the rail for a caller bug.** That is fail-closed by design ("FAILED always means PAUSE"). **DISMISSED**
+- **C1 · poll: a receipt that stays missing never escalates to a sticky halt** (indexer.ts:412–423). Each poll returns FAILED (PAUSE plus page), so outbound stays paused while the condition lasts, and nothing is delivered. **DISMISSED** (fails closed).
+- **C2 · `dfnsTransferBody` does not itself refuse amount 0 or an unchecked `to`** (adapter.ts:314–317). The body is used against fakes only until Q-N1/Q-N2 are answered, precheck refuses both cases, and the gateway binds `to`/amount to the server record (design §8.4). **DISMISSED.**
+- **C3 · `-32602` is also JSON-RPC's generic "invalid params"**, so an invalid-params reply is bisected to one block and then becomes RANGE_UNRECOVERABLE, not SOURCE_STOPPED. Both are sticky halts, so it fails closed, and the design (§6.2, C-41) chose this. **DISMISSED.**
+- **C4 · Stryker survivor indexer.ts:121** (duplicate logs in inChainOrder). Store dedupe absorbs it, and the worst case fails closed. **DISMISSED** as equivalent in money effect.
 
 ## DEFECTS
-- **m1 · MC-31 / L-3 / ADR-002 rule 2 (carried, still not routed in any document): address-filtered reads go to every source, the reference included.** `src/indexer/indexer.ts:333–336` (filtered `getLogs` on `topic1`/`topic2 = our addresses` to each source) and `:450–451` (receipts for our hashes to each source) · **minor** (privacy; not on the blocking list).
-  - ADR-002 l.37 says: "Address-filtered queries go **only** to own nodes. The reference gets unfiltered range queries and block hashes".
-  - RUBRIC MC-31 (code) says: "Address-specific reads go only to own nodes", with an "Egress capture test". There is no such test, and the `RpcSource` port has no own/reference role.
-  - Design §6.1 and §6.3 prescribe the opposite, so the conflict starts in the design.
-  - **Route.** Design §6.3 against ADR-002 rule 2 needs a human decision, and neither LEDGER nor OPEN_QUESTIONS records one. A NET-side option is a reference role that is sent `topics: [topic0, null, null]` over the two emitters and filters locally; it costs C-41 bisection on busy ranges.
-- **m2 · A lone ERC-20 `Transfer` log halts the whole rail, and the question was never raised (carried).** `src/indexer/indexer.ts:372–375`, `:499–500` · design §6.1, CLAUDE.md "Fail closed" · **minor** (fails closed; griefing only).
-  - Any ERC-20 log without an equal canonical partner is a sticky UNKNOWN_EVENT for the whole stream.
-  - The archive's "Zero-value transfers emit no log" (usdc-system-events.md l.78) covers the **system** log only. It says nothing on whether NativeFiatToken emits its own ERC-20 `Transfer` for `transfer(ourWallet, 0)`. If it does, any third party can halt outbound movement until two humans resume.
-  - Arc's guidance (integrate_exchanges_deposits.md l.101–102, 171–173) is to filter only the system emitter.
-  - OPEN_QUESTIONS has no row for this (grep for "zero-value" / NativeFiatToken finds only Q-A5).
-  - **Route.** Add the question. Until it is answered, the design should say whether a lone zero-value ERC-20 log is a QUARANTINE case record rather than a rail halt.
-- **m3 · MC-19: resume approvers are not authenticated (carried; blocked upstream).** `src/network/types.ts:194–211`, `src/indexer/indexer.ts:196–201` · **minor**.
-  - `resume` takes two free-text strings. Distinctness is enforced and tested, and the approvers are recorded.
-  - Authentication depends on CF-26 / CF-31, which are open. NET documents this, but MC-19's "authenticated" is not met inside NET.
-- **m4 · The head-regression tolerance is an operator value with no OPEN_QUESTIONS row (partly fixed).** `src/network/arc/config.ts:36–43` · CLAUDE.md non-negotiable 5 · **minor**.
-  - The silent default is gone (fixed).
-  - The constant still says "Ours, not Arc's (Q-N6 family)", but Q-N6 (OPEN_QUESTIONS.md:126) lists the `-32014` backoff, `A_ambiguous`, `A_xcheck`, `A_blocklist`, `A_fresh`, `T_pending`, `A_stuck` and `A_approval`, and not this value. So no owner has been asked to choose it.
-  - The sibling operator values each have a row: `stallAfterMs` → Q-A7, `startBlock` → Q-A6, `blocklistMaxAgeMs` → Q-N6.
-  - **Fix.** Add "head-regression tolerance (proposed 5 blocks)" to Q-N6, or give it its own row with an owner.
-- **m5 · Divergence from design §3 and §6.2 (carried, routed).** **minor**.
-  - (a) §6.2 says "Implement and reuse the existing U3 stub `pageBlockRange`". `src/chain/client/index.ts:45–51` still throws "not implemented: U3", and NET has its own `pageRange` (`src/indexer/fetch.ts:30`), which makes two paging functions. The header routes this to U3, but nothing in LEDGER records the routing.
-  - (b) §3 marks N2 (`arc/config.ts`) "money path: yes", and it is not on MONEY_PATH. The file header gives a reason (no amount arithmetic), and in this pass Stryker scored it 100 % and v8 coverage was 100 %, so there is no control gap. It is still an undocumented deviation from the frozen design.
-  - The `src/net/**` → `src/network/**` + `src/indexer/**` rename is not counted: §3 is headed "proposed", and the boundary lint enforces the actual layout.
+- **m1 · MC-31 / L-3 / ADR-002 rule 2: address-filtered reads go to every source, the reference included** · `src/indexer/indexer.ts:333–336` (getLogs with `topic1`/`topic2 = our addresses`, sent to each source) and `:450–451` (receipts for our hashes, sent to each source) · Lens R, MC-31 · **minor** (privacy; not on the blocking list).
+  - ADR-002 l.37: "Address-filtered queries go **only** to own nodes. The reference gets unfiltered range queries and block hashes".
+  - MC-31 requires an egress-capture test. None exists, and `RpcSource` has no own/reference role.
+  - Design §6.1 and §6.3 prescribe the opposite, so this needs a human decision. Neither LEDGER nor OPEN_QUESTIONS records one (`grep` for MC-31, "own nodes" or L-3 in both finds nothing).
+  - Carried, unchanged since the last report.
+- **m2 · A lone ERC-20 `Transfer` log halts the whole rail, and the zero-value question has not been raised** · `src/indexer/indexer.ts:372–375` and `:499–500` · CLAUDE.md "Fail closed", design §6.1 · **minor** (fails closed; griefing).
+  - Probe V3 shows that a third party's zero-value ERC-20 log to our address gives a sticky UNKNOWN_EVENT, and two humans must resume.
+  - The archive's "Zero-value transfers emit no log" (usdc-system-events.md l.78) is stated for the **system** log only.
+  - OPEN_QUESTIONS has no row on whether NativeFiatToken emits an ERC-20 `Transfer` for `transfer(x, 0)` (`grep` for zero-value / NativeFiatToken finds only Q-A5).
+  - Route: add the question. The design should say whether this is a QUARANTINE case rather than a rail halt.
+  - Carried.
+- **m3 · MC-19: resume approvers are not authenticated in NET** · `src/network/types.ts:194–211`, `src/indexer/indexer.ts:196–201` · **minor**.
+  - Distinctness is enforced (M17 killed), and the approvers are recorded.
+  - Authentication depends on CF-26 / CF-31, which are open, so MC-19's "authenticated" is not met inside NET.
+  - Carried; blocked upstream.
+- **m4 · The head-regression tolerance is an operator value with no OPEN_QUESTIONS row** · `src/network/arc/config.ts:37–44` · CLAUDE.md non-negotiable 5 · **minor**.
+  - The default is gone: the type requires the value, and a runtime `typeof` check throws (config.ts:100). M34 was killed.
+  - The comment says "Q-N6 family", but Q-N6 (OPEN_QUESTIONS.md:126) does not list this value, and `grep regression|tolerance` over OPEN_QUESTIONS and LEDGER finds nothing.
+  - Fix: add "head-regression tolerance (proposed 5 blocks)" to Q-N6, or give it its own row with an owner.
+  - Carried.
+- **m5 · Deviation from frozen design §3 / §6.2** · **minor**.
+  - (a) §6.2 says "Implement and reuse the existing U3 stub `pageBlockRange`". NET has its own `pageRange` (`src/indexer/fetch.ts:30`), and the header routes the stub to U3. LEDGER has no routing entry (`grep pageBlockRange` finds nothing).
+  - (b) §3 marks N2 `arc/config.ts` "money path: yes", but it is not in MONEY_PATH.md. There is no control gap: Stryker scores it 100 % and coverage is 100 %. It is still an unrecorded deviation.
+  - Carried.
+- **m6 (new) · confirmTx turns the C-42 load-balanced receipt lag into a sticky rail halt** · `src/indexer/indexer.ts:431–438` (`agreedReceipt`): `if (receipt === null || missing.every((source) => (heads.get(source) as bigint) < receipt.blockNumber)) return { ok: true, value: null }; return disagree(...)` · CLAUDE.md "Fail closed" (false-positive PAUSE), C-42 · **minor** (fails closed; availability).
+  - The heads are read first, and the receipt is read in a later request. The archive documents that on the load-balanced endpoint "the backend that reported the current head may differ from the one serving this request" (rpc-endpoints.md l.119; also l.40–44).
+  - So a reference that answers `head = N` and then has no receipt for a tx in block N is documented, normal behaviour. confirmTx treats it as RPC_DISAGREEMENT and stores a sticky halt that needs two humans (probe V2).
+  - `pollReceipt` (indexer.ts:405–423) handles the same condition as lag: it retries with backoff, and then returns SOURCE_LAGGING, which is not sticky. That is the module's own stated reasoning (header l.36–38).
+  - No money is at risk, but the Arc leg's normal confirmation path can halt the whole rail on a benign RPC race.
+  - Fix: in `agreedReceipt`, retry a missing source with the `-32014` backoff before deciding. If it is still missing, return SOURCE_LAGGING, not sticky. Keep RPC_DISAGREEMENT for two **different** receipts. Add a test with a source whose head has reached the block but whose receipt read returns null once and then the receipt.
 
 **Out of scope (not charged to NET).**
-- MC-01 lint: 4 findings in `src/history/index.ts` (HIST).
-- money-path.test: 3 failures. MONEY_PATH lists HIST and JPARTNER files that the Stryker `mutate` list lacks, and `src/journey/recipients/index.ts` imports `node:util`.
-- [inspection-only] A second indexer instance checks the stored halt only at the start of each call (indexer.ts:214). Every page it commits is still two-source-agreed and passes compare-and-set.
+- `test/unit/money-path.test.ts` fails 1 test: MONEY_PATH.md lists `src/ops/{types,ports,audit,queue}.ts` and `src/registry/index.ts`, and these are not in the Stryker `mutate` list. Route to OPS / registry.
+- [inspection-only] A second indexer instance reads the stored halt only at the start of a call (indexer.ts:214). Every page it commits is still two-source-agreed and passes compare-and-set.
 
-### Status of the 11:10 findings (re-checked by reconstruction)
-| Finding | Status | Evidence |
+### Status of the 14:07 findings (re-checked by reconstruction, not copied)
+| 14:07 | Now | Evidence |
 |---|---|---|
-| m1, poll null receipt | **FIXED** | pollReceipt retries, then SOURCE_LAGGING (not sticky). Killed P1–P6, probes V3 and V4, and tests "missing … after every retry", "missing on the first read …" and "no receipt on any source" |
-| m2, MC-31 | Carried | Now m1 |
-| m3, lone ERC-20 | Carried | Now m2 |
-| m4, MC-19 | Carried | Now m3 |
-| m5, tolerance default | **Partly FIXED** | No default; P12 killed. The OPEN_QUESTIONS row is still missing → m4 |
-| m6, malformed address | **FIXED** | `pollAddresses` in both adapters, before any read, not sticky. Killed P7–P11 and P13; probe V2; a contract test runs it on both implementations |
-| m7, layout and paging | Carried, narrowed | Now m5 (the rename part is dropped) |
+| m1, MC-31 | m1, still open | code unchanged (hash); no LEDGER or OPEN_QUESTIONS row |
+| m2, lone ERC-20 | m2, still open | probe V3; no question row |
+| m3, MC-19 | m3, still open | CF-26 / CF-31 still open |
+| m4, tolerance row | m4, still open | the grep finds no row |
+| m5, layout / paging | m5, still open | no LEDGER routing; config.ts still not in MONEY_PATH |
+| — | m6, new | probe V2 |
 
 ## VERDICT
-NEGATIVE (5 defects: 0 blocking, 5 minor: m1–m5)
+NEGATIVE (6 defects: 0 blocking, 6 minor, m1–m6)
 
-Zero blocking findings:
-- no path loses, misposts or double-counts money;
-- every inbound log is checked by emitter, topic, two-source agreement and receipt status, and deduplicated on (chainId, txHash, logIndex);
+There are zero blocking findings:
+- no path loses, misposts, double-counts or moves money without its control;
+- credit comes only from the system emitter, and the two-log ERC-20 fixture gives one credit;
+- dedupe is on (chainId, txHash, logIndex), with digest conflicts detected;
+- every log is checked by emitter, topic, two-source agreement and receipt status;
 - unknown errors stop and are never "no logs";
-- RPC disagreement and stall give FAILED (PAUSE);
+- RPC disagreement and stall return FAILED, with disagreement sticky until two distinct approvers resume;
 - no invented fact, secret or real API call was found;
-- MC-01 and Semgrep are clean on NET.
+- MC-01 lint and Semgrep MC-01 are clean on NET.
 
-All five minors are routed or carried items. Four of them (m1, m2, m3, m5) need a human or another unit, not a NET code change. m4 needs one OPEN_QUESTIONS row.
+Routing:
+- **m6** needs a NET code change.
+- **m4** needs one OPEN_QUESTIONS row.
+- **m1, m2, m3 and m5** need a human decision or another unit (design §6.3 vs ADR-002; the zero-value question; CF-26 / CF-31; U3 / LEDGER).
 
-phase · CO-1 v3 D1 / unit NET Lens R round 1 (re-run 3) · units frozen: n/a (verifier does not freeze) · streak 0/3 · rounds used: not tracked by verifier · regen budget: not tracked by verifier
+phase · CO-1 v3 D1 / unit NET Lens R round 1 (re-run 4) · units frozen: n/a (verifier does not freeze) · streak 0/3 · rounds used: not tracked by verifier · regen budget: not tracked by verifier

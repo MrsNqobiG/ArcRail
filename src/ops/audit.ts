@@ -84,7 +84,14 @@ export class AuditLog {
         at: this.clock(),
         prevHash: tail.value === null ? GENESIS_HASH : tail.value.hash,
       };
-      const r = await this.store.append(Object.freeze({ ...base, hash: entryHash(base) }));
+      const entry: AuditEntry = Object.freeze({
+        ...base,
+        actors: Object.freeze(base.actors),
+        evidenceRefs: Object.freeze(base.evidenceRefs),
+        refs: Object.freeze(base.refs),
+        hash: entryHash(base),
+      });
+      const r = await this.store.append(entry);
       if (r.kind === 'OK') return true;
       if (r.kind !== 'REJECTED') return false;
     }

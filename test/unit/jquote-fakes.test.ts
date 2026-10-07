@@ -9,7 +9,7 @@ import { FaultPlan } from '../../src/nova-ports/fakes/faults.js';
 import { fiatCode, idempotencyKey, ledgerAssetCode } from '../../src/nova-ports/ids.js';
 import { BandedFx, BandedPayoutQuotes, LotTableFx, LotTablePayoutQuotes, ManualClock } from '../../src/journey/quote/fakes.js';
 import { checkFxLock, checkPayoutQuote } from '../../src/journey/quote/ports.js';
-import type { FxPort, PayoutQuotePort, PayoutQuoteRequest } from '../../src/journey/quote/ports.js';
+import type { FxLocker, PayoutQuotePort, PayoutQuoteRequest } from '../../src/journey/quote/ports.js';
 
 const P2 = cbsPrecision(2);
 const P6 = cbsPrecision(6);
@@ -21,14 +21,14 @@ const k2 = idempotencyKey('k:2');
 const lot = { from: cbsMinor(37n), to: cbsMinor(20000n) };
 const pair = { from: ZAR, fromPrec: P2, to: USDC, toPrec: P6 };
 
-const fxMakers: [string, (clock: ManualClock, faults: FaultPlan) => FxPort][] = [
+const fxMakers: [string, (clock: ManualClock, faults: FaultPlan) => FxLocker][] = [
   ['LotTableFx', (clock, faults) => new LotTableFx({ clock, pairs: [{ ...pair, lot }], ttlMs: 1000n, limit: cbsMinor(10_000_000n), faults })],
   ['BandedFx', (clock, faults) => new BandedFx({ clock, pairs: [{ ...pair, bands: [{ upTo: cbsMinor(10_000_000n), lot }] }], ttlMs: 1000n, faults })],
 ];
 
 const req: QuoteRequest = { from: ZAR, to: USDC, amount: cbsMinor(10000n), side: 'FROM_EXACT' };
 
-describe.each(fxMakers)('FxPort contract: %s', (_name, make) => {
+describe.each(fxMakers)('FxLocker double contract: %s', (_name, make) => {
   it('locks an exact rate that passes checkFxLock, expiring on the clock', async () => {
     const clock = new ManualClock(500n);
     const fx = make(clock, new FaultPlan());

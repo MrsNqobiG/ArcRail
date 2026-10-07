@@ -10,8 +10,10 @@
  *
  * One quote per payment. It composes ONLY the legs the two choices need
  * (`journeyLegs`, src/status/journey.ts):
- * - CONVERT_IN, only when the payer picks FIAT: fiat→USDC via FxPort (Nova's
- *   existing FX/OTC engine; this package computes no rate);
+ * - CONVERT_IN, only when the payer picks FIAT: fiat→USDC through an
+ *   FxLocker (the fill desk, fill.ts: a Nova pricing code whose own
+ *   `expiresAt` is the rate lock, design delta 1 D-1; this package computes
+ *   no rate);
  * - ARC_TRANSFER, always: USDC on Arc, with the network fee allowance in the
  *   native 18-dp view (C-10) split by U1 into ledger minor units and sub-minor
  *   dust (dust goes to suspense with a record, never dropped);
@@ -49,7 +51,7 @@ import type { LegKind } from '../../status/index.js';
 import { fiatFromLedger, fiatText } from './fiat.js';
 import type { FiatAmount } from './fiat.js';
 import { checkFxLock, checkPayoutQuote, remainderBelowOneUnit } from './ports.js';
-import type { Clock, FxLock, FxPort, PartnerKind, PayoutQuote, PayoutQuotePort, PayoutQuoteRequest } from './ports.js';
+import type { Clock, FxLock, FxLocker, PartnerKind, PayoutQuote, PayoutQuotePort, PayoutQuoteRequest } from './ports.js';
 
 // ---------------------------------------------------------------------------
 // Configuration and request.
@@ -114,8 +116,8 @@ export interface QuoteDeps {
   readonly clock: Clock;
   /** The settlement network adapter (its pinned network and chain ID), never a config value. */
   readonly settlementNetwork: SettlementNetworkPin;
-  /** Required for a FIAT pay-in; null refuses such a quote (METHOD_NOT_ENABLED). */
-  readonly fx: FxPort | null;
+  /** Required for a FIAT pay-in; null refuses such a quote (METHOD_NOT_ENABLED). The fill desk's locker for this payment (D-1). */
+  readonly fx: FxLocker | null;
   /** Required for a FIAT_BANK payout; null refuses such a quote (METHOD_NOT_ENABLED). */
   readonly payout: WiredPayoutPartner | null;
   /** Upper bound of the network fee of one transfer, native 18-dp view (from the gas unit, U11). */
@@ -262,6 +264,8 @@ export type QuoteRefusal =
   | 'BELOW_MINIMUM'
   | 'KEY_CONFLICT'
   | 'BAD_EXPIRY'
+  | 'BAD_CODE'
+  | 'FILL_OUTSTANDING'
   | 'RATE_LOCK_EXPIRED';
 
 /** A port answered with something that is not an exact quote, or the composed quote does not conserve value. Fail closed. */
@@ -473,7 +477,7 @@ function minBig(a: bigint, b: bigint | null): bigint {
 }
 
 /** The payer's side as the composer needs it: FIAT always has its FxPort. */
-type PayInPlan = { readonly kind: 'FIAT'; readonly port: FxPort; readonly currency: FiatCode } | { readonly kind: 'STABLECOIN' };
+type PayInPlan = { readonly kind: 'FIAT'; readonly port: FxLocker; readonly currency: FiatCode } | { readonly kind: 'STABLECOIN' };
 /** The receiver's side: FIAT_BANK always has its PayoutQuotePort. */
 type PayoutPlan = { readonly kind: 'FIAT'; readonly port: PayoutQuotePort; readonly partner: PartnerKind; readonly currency: FiatCode } | { readonly kind: 'STABLECOIN' };
 
@@ -532,7 +536,7 @@ function planRequest(req: JourneyQuoteRequest, cfg: QuoteConfig, deps: QuoteDeps
 
 type Step<T> = { readonly kind: 'VALUE'; readonly value: T } | { readonly kind: 'STOP'; readonly result: Refused | PortResult<never, never> };
 
-async function lockFx(fx: FxPort, key: IdempotencyKey, req: QuoteRequest, precision: CbsPrecision): Promise<Step<FxLock>> {
+async function lockFx(fx: FxLocker, key: IdempotencyKey, req: QuoteRequest, precision: CbsPrecision): Promise<Step<FxLock>> {
   const r = await fx.lockRate(key, req);
   if (r.kind === 'AMBIGUOUS') return { kind: 'STOP', result: ambiguous(r.cause) };
   if (r.kind === 'REJECTED') return { kind: 'STOP', result: refuse(r.code, r.detail) };

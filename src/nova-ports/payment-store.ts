@@ -341,7 +341,7 @@ export interface RailState {
 }
 
 /** §7.3 putCase codes. */
-export type CaseRejectCode = KeyConflict | 'DECISION_MISSING';
+export type CaseRejectCode = KeyConflict | 'DECISION_MISSING' | 'BINDING_MISMATCH';
 
 export interface PaymentStorePort {
   create(p: NewPayment): Promise<PortResult<PaymentRecord, CreateRejectCode>>;
@@ -998,8 +998,9 @@ export function decideClosePayout(
   if (rec.version !== expectedVersion) return refuse('VERSION_CONFLICT', `at version ${rec.version}`);
   if (seen === null || seen.digest !== evidence.payloadDigest) return refuse('SIGNAL_CONFLICT', `evidence ${evidence.dedupeKey} is not the recorded signal under that key`);
   const claim = keys.includes(partnerClaimKey(rec.paymentId));
-  if (late) {
-    const lateWhy = partnerCase === null ? 'no PARTNER_RETURN case' : closeByReturn(rec, evidence, partnerCase);
+  // `late` implies P11 was enqueued, which closeByClaim does only on an existing case (a case is never deleted).
+  if (late && partnerCase !== null) {
+    const lateWhy = closeByReturn(rec, evidence, partnerCase);
     return lateWhy === null ? { kind: 'APPLY', record: derive({ ...rec, version: rec.version + 1n }) } : refuse('ILLEGAL_TRANSITION', lateWhy);
   }
   if (!keys.includes(releaseKey(rec.paymentId)) || claim === keys.includes(partnerReturnKey(rec.paymentId))) {
@@ -1023,12 +1024,14 @@ function caseKey(c: CaseRecord): string {
  * OPEN with no claimed log, carries `expected` exactly when it is a
  * PARTNER_RETURN (throws otherwise: a programming error), and lists only
  * decisions recorded for it; a PARTNER_RETURN opens on an OPEN_PARTNER_CASE
- * decision (two people approve the expected return, F-17).
+ * decision (two people approve the expected return, F-17) and expects exactly
+ * the amount A of its subject payment (BINDING_MISMATCH otherwise).
  */
 export function decidePutCase(
   c: CaseRecord,
   existing: CaseRecord | null,
   decisionOf: (decisionId: string) => OperatorDecision | null,
+  subjectPayment: PaymentRecord | null,
 ): PortResult<CaseRecord, CaseRejectCode> | { readonly kind: 'PUT' } {
   if (c.caseId !== deriveCaseId(c.kind, c.subject)) return rejected('KEY_CONFLICT', `case id ${c.caseId} does not derive from its kind and subject (§10.2)`);
   if (existing !== null) return caseKey(existing) === caseKey(c) ? ok(existing, true) : rejected('KEY_CONFLICT', `case ${c.caseId} already exists with other content`);
@@ -1038,6 +1041,10 @@ export function decidePutCase(
   if (ds.some((d) => d === null || d.caseId !== c.caseId)) return rejected('DECISION_MISSING', `case ${c.caseId} lists a decision not recorded for it`);
   const [first] = ds;
   if (c.kind === 'PARTNER_RETURN' && first?.kind !== 'OPEN_PARTNER_CASE') return rejected('DECISION_MISSING', 'a PARTNER_RETURN case opens on a two-person OPEN_PARTNER_CASE decision');
+  // §9.2 P2R, §12 F-17: the expected return is exactly the payment's A (server-side binding); another value would strand the payment, so it never opens.
+  if (c.kind === 'PARTNER_RETURN' && (subjectPayment === null || c.expected?.value !== subjectPayment.binding.amount)) {
+    return rejected('BINDING_MISMATCH', `a PARTNER_RETURN case expects exactly the amount of payment ${c.subject} (its binding), and that payment must exist`);
+  }
   return { kind: 'PUT' };
 }
 

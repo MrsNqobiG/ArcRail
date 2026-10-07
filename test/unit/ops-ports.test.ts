@@ -23,15 +23,20 @@ import type { CaseRecord } from '../../src/ops/types.js';
 import type { ConsentBinding } from '../../src/ops/ports.js';
 import { ALICE, BOB, CLIENT_ACC, PAY, SETTLE, USDC, FACTS_NONE, legs } from './ops-support.js';
 
+const ANY = { arc: 'ANY', p6Unposted: false } as const;
+
 function rec(id: string, version: bigint, status: 'OPEN' | 'CLOSED' = 'OPEN'): CaseRecord {
   return {
     caseId: id,
-    kind: 'HOLD',
-    reason: 'NONCE_HOLD',
+    kind: 'PAUSE',
+    reason: 'RECON_DRIFT',
     subject: 's',
     paymentId: PAY,
     clientUid: 'c',
     amounts: null,
+    bookedEntryRef: null,
+    exposure: null,
+    consumedDigests: [],
     options: [],
     evidenceRefs: ['e'],
     openedAt: 't',
@@ -93,15 +98,15 @@ describe.each([
 ])('OPS ledger contract: %s fake', (_n, make) => {
   it('is idempotent on the key and rejects a changed journal', async () => {
     const l = make();
-    const j = { template: 'P6', legs: legs(100n) } as const;
+    const j = { template: 'P6', legs: legs(100n), paymentId: PAY, guard: ANY, limit: null } as const;
     const first = await l.post(idempotencyKey('k:1'), j);
     expect(first).toMatchObject({ kind: 'OK', replayed: false, value: { debits: 100n, credits: 100n } });
     const again = await l.post(idempotencyKey('k:1'), j);
     expect(again).toMatchObject({ kind: 'OK', replayed: true });
     expect(again.kind === 'OK' && first.kind === 'OK' && again.value.journalRef).toBe(first.kind === 'OK' && first.value.journalRef);
-    expect(await l.post(idempotencyKey('k:1'), { template: 'P6', legs: legs(101n) })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT' });
-    expect(await l.post(idempotencyKey('k:1'), { template: 'P13_PAYIN_REFUND', legs: legs(100n) })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT' });
-    expect(await l.post(idempotencyKey('k:1'), { template: 'P6', legs: legs(100n, SETTLE, CLIENT_ACC) })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT' });
+    expect(await l.post(idempotencyKey('k:1'), { template: 'P6', legs: legs(101n), paymentId: PAY, guard: ANY, limit: null })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT' });
+    expect(await l.post(idempotencyKey('k:1'), { template: 'P13_PAYIN_REFUND', legs: legs(100n), paymentId: PAY, guard: ANY, limit: null })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT' });
+    expect(await l.post(idempotencyKey('k:1'), { template: 'P6', legs: legs(100n, SETTLE, CLIENT_ACC), paymentId: PAY, guard: ANY, limit: null })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT' });
     expect(l.count).toBe(1);
     const second = await l.post(idempotencyKey('k:2'), j);
     expect(second.kind === 'OK' && first.kind === 'OK' && second.value.journalRef !== first.value.journalRef).toBe(true);

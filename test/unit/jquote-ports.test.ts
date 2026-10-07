@@ -1,58 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { cbsMinor, cbsPrecision } from '../../src/amounts/index.js';
 import type { Quote, QuoteRequest } from '../../src/nova-ports/conversion.js';
-import { FixedRateConversion } from '../../src/nova-ports/fakes/conversion-fakes.js';
-import { FaultPlan } from '../../src/nova-ports/fakes/faults.js';
-import { fiatCode, idempotencyKey, ledgerAssetCode } from '../../src/nova-ports/ids.js';
-import { checkFxLock, checkPayoutQuote, fxPortFromConversion, remainderBelowOneUnit } from '../../src/journey/quote/ports.js';
+import { fiatCode, ledgerAssetCode } from '../../src/nova-ports/ids.js';
+import { checkFxLock, checkPayoutQuote, remainderBelowOneUnit } from '../../src/journey/quote/ports.js';
 import type { FxLock, PayoutQuote, PayoutQuoteRequest } from '../../src/journey/quote/ports.js';
 
 const ZAR = ledgerAssetCode('ZAR');
 const USDC = ledgerAssetCode('USDC');
 const P6 = cbsPrecision(6);
 const P2 = cbsPrecision(2);
-const key = idempotencyKey('jq:test:1');
-
-function conversion(faults?: FaultPlan): FixedRateConversion {
-  return new FixedRateConversion({
-    pairs: [{ from: ZAR, fromPrecision: P2, to: USDC, toPrecision: P6, lot: { from: cbsMinor(37n), to: cbsMinor(20000n) } }],
-    ttlTicks: 5n,
-    limit: cbsMinor(1_000_000n),
-    available: null,
-    ...(faults === undefined ? {} : { faults }),
-  });
-}
-
-const tickReader = (s: string): bigint | null => (s.startsWith('tick:') ? BigInt(s.slice(5)) * 1000n : null);
 const fxReq: QuoteRequest = { from: ZAR, to: USDC, amount: cbsMinor(10000n), side: 'FROM_EXACT' };
-
-describe('JQUOTE fxPortFromConversion (Nova ConversionPort reached, not reimplemented)', () => {
-  it('returns Nova quote unchanged, with the expiry read into epoch ms', async () => {
-    const fx = fxPortFromConversion(conversion(), tickReader);
-    const r = await fx.lockRate(key, fxReq);
-    expect(r.kind).toBe('OK');
-    if (r.kind !== 'OK') return;
-    expect(r.replayed).toBe(false);
-    expect(r.value.expiresAtMs).toBe(5000n);
-    expect(r.value.quote.to.amount).toBe(270n * 20000n);
-    expect(r.value.quote.remainder).toBe(10n);
-    const again = await fx.lockRate(key, fxReq);
-    expect(again).toEqual({ kind: 'OK', value: r.value, replayed: true });
-  });
-
-  it('passes REJECTED and AMBIGUOUS through unchanged', async () => {
-    const fx = fxPortFromConversion(conversion(), tickReader);
-    expect(await fx.lockRate(key, { ...fxReq, from: ledgerAssetCode('EUR') })).toEqual({ kind: 'REJECTED', code: 'NO_ROUTE', detail: 'EUR->USDC' });
-    const plan = new FaultPlan();
-    plan.arm('quote', 'BEFORE_COMMIT', 'TIMEOUT');
-    expect(await fxPortFromConversion(conversion(plan), tickReader).lockRate(key, fxReq)).toEqual({ kind: 'AMBIGUOUS', cause: 'TIMEOUT' });
-  });
-
-  it('refuses an unreadable expiry instead of guessing (BAD_EXPIRY)', async () => {
-    const fx = fxPortFromConversion(conversion(), () => null);
-    expect(await fx.lockRate(key, fxReq)).toEqual({ kind: 'REJECTED', code: 'BAD_EXPIRY', detail: 'unreadable expiry "tick:5"' });
-  });
-});
 
 function goodLock(over: Partial<Quote> = {}): FxLock {
   const quote: Quote = {

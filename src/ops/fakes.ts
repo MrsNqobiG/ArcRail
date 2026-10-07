@@ -12,6 +12,7 @@ import type {
   AuditStorePort,
   CaseStorePort,
   ConsentBinding,
+  JournalGuard,
   ConsentCode,
   ConsentPort,
   OpsJournal,
@@ -25,6 +26,7 @@ import type {
   RetryCode,
   StaffDirectoryPort,
 } from './ports.js';
+import { debitTotal } from './types.js';
 import type { CaseRecord } from './types.js';
 
 // ---- case store ----------------------------------------------------------------------------
@@ -44,6 +46,9 @@ export class MapCaseStore implements CaseStorePort {
   }
   async listOpen(): Promise<PortResult<readonly CaseRecord[], never>> {
     return ok([...this.m.values()].filter((r) => r.status === 'OPEN'), false);
+  }
+  async listByPayment(paymentId: string): Promise<PortResult<readonly CaseRecord[], never>> {
+    return ok([...this.m.values()].filter((r) => r.paymentId === paymentId), false);
   }
 }
 
@@ -65,6 +70,10 @@ export class LogCaseStore implements CaseStorePort {
   async listOpen(): Promise<PortResult<readonly CaseRecord[], never>> {
     const ids = [...new Set(this.log.map((r) => r.caseId))];
     return ok(ids.map((id) => this.latest(id) as CaseRecord).filter((r) => r.status === 'OPEN'), false);
+  }
+  async listByPayment(paymentId: string): Promise<PortResult<readonly CaseRecord[], never>> {
+    const ids = [...new Set(this.log.map((r) => r.caseId))];
+    return ok(ids.map((id) => this.latest(id) as CaseRecord).filter((r) => r.paymentId === paymentId), false);
   }
 }
 
@@ -113,28 +122,68 @@ export class LogConsentStore implements ConsentPort {
 // ---- ledger --------------------------------------------------------------------------------
 
 function journalDigest(j: OpsJournal): string {
-  return lpDigestHex([j.template, ...j.legs.flatMap((l) => [l.account, l.side, l.asset, l.unit, l.amount.toString(10)])]);
+  return lpDigestHex([
+    j.template,
+    j.paymentId,
+    j.guard.arc,
+    String(j.guard.p6Unposted),
+    j.limit === null ? '-' : `${j.limit.bucket}:${j.limit.unit}:${j.limit.cap}`,
+    ...j.legs.flatMap((l) => [l.account, l.side, l.asset, l.unit, l.amount.toString(10)]),
+  ]);
 }
 
-function totals(j: OpsJournal): { debits: bigint; credits: bigint } {
+function totals(j: OpsJournal): { debits: bigint; credits: bigint; lines: OpsJournal['legs'] } {
   let debits = 0n;
   let credits = 0n;
   for (const l of j.legs) {
     if (l.side === 'DEBIT') debits += l.amount;
     else credits += l.amount;
   }
-  return { debits, credits };
+  return { debits, credits, lines: j.legs.map((l) => ({ ...l })) };
 }
 
-/** Fake A: a map keyed by idempotency key. */
+/** What Nova's store enforces in the posting commit: the leg guard against the payment's current facts. */
+async function guardProblem(facts: PaymentFactsPort | undefined, j: OpsJournal): Promise<OpsLedgerCode | null> {
+  if (facts === undefined || (j.guard.arc === 'ANY' && !j.guard.p6Unposted)) return null;
+  const r = await facts.facts(j.paymentId);
+  if (r.kind !== 'OK') return 'LEG_GUARD';
+  return guardHolds(r.value, j.guard) ? null : 'LEG_GUARD';
+}
+
+function guardHolds(f: PaymentFacts, g: JournalGuard): boolean {
+  if (g.p6Unposted && f.p6Posted) return false;
+  switch (g.arc) {
+    case 'ANY':
+      return true;
+    case 'NONE':
+      return f.arcLeg === 'NONE';
+    case 'NOT_SENT':
+      return f.arcLeg === 'NONE' || f.arcLeg === 'PROVEN_NOT_SENT';
+    case 'NOT_UNRESOLVED':
+      return f.arcLeg !== 'UNRESOLVED';
+    default:
+      return f.arcLeg === 'SENT' && f.returnClaimed;
+  }
+}
+
+/** Fake A: a map keyed by idempotency key, with running per-payment totals. */
 export class MapLedger implements OpsLedgerPort {
   private readonly m = new Map<string, { digest: string; posted: PostedJournal }>();
+  private readonly running = new Map<string, bigint>();
+  /** With a facts port, the guard is enforced at post time, as Nova's store does in the same commit. */
+  constructor(private readonly facts?: PaymentFactsPort) {}
   async post(key: IdempotencyKey, journal: OpsJournal): Promise<PortResult<PostedJournal, OpsLedgerCode>> {
     const digest = journalDigest(journal);
     const e = this.m.get(key);
     if (e !== undefined) return e.digest === digest ? ok(e.posted, true) : rejected('KEY_CONFLICT', key);
+    const bad = await guardProblem(this.facts, journal);
+    if (bad !== null) return rejected(bad, key);
+    const lim = journal.limit;
+    const slot = lim === null ? '' : `${journal.paymentId}|${lim.bucket}`;
+    if (lim !== null && (this.running.get(slot) ?? 0n) + debitTotal(journal.legs) > lim.cap) return rejected('LIMIT_EXCEEDED', key);
     const posted: PostedJournal = { journalRef: `jrnl-${this.m.size + 1}`, ...totals(journal) };
     this.m.set(key, { digest, posted });
+    if (lim !== null) this.running.set(slot, (this.running.get(slot) ?? 0n) + debitTotal(journal.legs));
     return ok(posted, false);
   }
   get count(): number {
@@ -142,13 +191,23 @@ export class MapLedger implements OpsLedgerPort {
   }
 }
 
-/** Fake B: an append-only journal log; a key lookup folds the log. */
+/** Fake B: an append-only journal log; a key lookup and the running totals fold the log. */
 export class LogLedger implements OpsLedgerPort {
   readonly log: { key: string; digest: string; journal: OpsJournal; ref: string }[] = [];
+  constructor(private readonly facts?: PaymentFactsPort) {}
   async post(key: IdempotencyKey, journal: OpsJournal): Promise<PortResult<PostedJournal, OpsLedgerCode>> {
     const digest = journalDigest(journal);
     const prior = this.log.find((e) => e.key === key);
     if (prior !== undefined) return prior.digest === digest ? ok({ journalRef: prior.ref, ...totals(prior.journal) }, true) : rejected('KEY_CONFLICT', key);
+    const bad = await guardProblem(this.facts, journal);
+    if (bad !== null) return rejected(bad, key);
+    const lim = journal.limit;
+    if (lim !== null) {
+      const so = this.log
+        .filter((e) => e.journal.paymentId === journal.paymentId && e.journal.limit?.bucket === lim.bucket)
+        .reduce((t, e) => t + debitTotal(e.journal.legs), 0n);
+      if (so + debitTotal(journal.legs) > lim.cap) return rejected('LIMIT_EXCEEDED', key);
+    }
     const ref = `jrnl-${this.log.length + 1}`;
     this.log.push({ key, digest, journal, ref });
     return ok({ journalRef: ref, ...totals(journal) }, false);

@@ -22,15 +22,18 @@ import { CLIENT_ACC, EV, OPT, PAY, SETTLE, USDC, ZAR, legs, makeRig, open, openI
 
 describe('OPS closed sets', () => {
   it('has exactly these case kinds, actions, reasons and per-kind actions', () => {
-    expect(CASE_KINDS).toEqual(['QUARANTINE', 'HOLD', 'PAUSE', 'REQUOTE', 'UNDERPAYMENT', 'OVERPAYMENT', 'LATE_PAYIN', 'STUCK_PAYOUT', 'RETURNED_PAYOUT', 'UNRESOLVED_SUBMIT']);
-    expect(OP_ACTIONS).toEqual(['REQUOTE', 'ACCEPT_WITH_CONSENT', 'REFUND', 'RETRY_AS_NEW_PAYMENT', 'WRITE_OFF', 'RELEASE_QUARANTINE', 'UNPAUSE']);
-    expect(CONSENT_ACTIONS).toEqual(['REQUOTE', 'ACCEPT_WITH_CONSENT']);
+    expect(CASE_KINDS).toEqual(['QUARANTINE', 'PAUSE', 'REQUOTE', 'UNMATCHED_FILL', 'FILL_TIMEOUT', 'CONSENT_MISSING', 'HISTORY_WRITE_FAILED', 'UNDERPAYMENT', 'OVERPAYMENT', 'LATE_PAYIN', 'STUCK_PAYOUT', 'RETURNED_PAYOUT', 'UNRESOLVED_SUBMIT']);
+    expect(OP_ACTIONS).toEqual(['REQUOTE', 'ACCEPT_WITH_CONSENT', 'REFUND', 'RETRY_AS_NEW_PAYMENT', 'WRITE_OFF', 'RELEASE_QUARANTINE', 'UNPAUSE', 'ADOPT_FILL', 'REVERSE_FILL', 'CLOSE_HISTORY_GAP']);
+    expect(CONSENT_ACTIONS).toEqual(['REQUOTE', 'ACCEPT_WITH_CONSENT', 'ADOPT_FILL']);
     expect(NOT_SENT_PROOFS).toEqual(['APPROVER_DENIAL', 'ABORT_ACCEPTED', 'NONCE_CONSUMED_ELSEWHERE', 'NONCE_RESOLVED', 'RECEIPT_STATUS_0_BOTH_SOURCES']);
     expect(REASONS).toEqual({
-      QUARANTINE: ['SIGNAL_CONFLICT', 'UNKNOWN_EVENT', 'INVARIANT_FAILED', 'CONSENT_MISSING', 'AUTHENTICITY_FAILED'],
-      HOLD: ['NONCE_HOLD', 'RECON_DRIFT', 'MONITOR_NOT_ALL_CLEAR'],
-      PAUSE: ['RAIL_DISAGREEMENT', 'RECON_DRIFT', 'INDEXER_STALL'],
-      REQUOTE: ['RATE_EXPIRED', 'RATE_CHANGED', 'FILL_AFTER_EXPIRY'],
+      QUARANTINE: ['SIGNAL_CONFLICT', 'UNKNOWN_EVENT', 'INVARIANT_FAILED', 'CONSENT_MISSING', 'AUTHENTICITY_FAILED', 'BOOKED_ENTRY_MISMATCH', 'SUB_UNIT_REMAINDER'],
+      PAUSE: ['RAIL_DISAGREEMENT', 'RECON_DRIFT', 'INDEXER_STALL', 'MONITOR_NOT_ALL_CLEAR'],
+      REQUOTE: ['RATE_EXPIRED', 'RATE_CHANGED'],
+      UNMATCHED_FILL: ['FILL_AFTER_EXPIRY', 'FILL_MISPOSTED', 'FILL_TERMS_MISMATCH'],
+      FILL_TIMEOUT: ['NO_FILL_BY_TIMEOUT'],
+      CONSENT_MISSING: ['NO_CONSENT_RECORD', 'CONSENT_BINDING_MISMATCH', 'CONSENT_ALREADY_USED'],
+      HISTORY_WRITE_FAILED: ['HISTORY_APPEND_FAILING_PAST_AGE'],
       UNDERPAYMENT: ['CONFIRMED_BELOW_EXPECTED'],
       OVERPAYMENT: ['CONFIRMED_ABOVE_EXPECTED'],
       LATE_PAYIN: ['PAYIN_AFTER_QUOTE_EXPIRY', 'PAYIN_AFTER_PAYMENT_CLOSED'],
@@ -40,9 +43,12 @@ describe('OPS closed sets', () => {
     });
     expect(ALLOWED_ACTIONS).toEqual({
       QUARANTINE: ['RELEASE_QUARANTINE', 'REFUND', 'WRITE_OFF'],
-      HOLD: ['UNPAUSE', 'REFUND', 'WRITE_OFF'],
       PAUSE: ['UNPAUSE'],
       REQUOTE: ['REQUOTE', 'REFUND', 'WRITE_OFF'],
+      UNMATCHED_FILL: ['ADOPT_FILL', 'REVERSE_FILL'],
+      FILL_TIMEOUT: ['REQUOTE', 'REFUND', 'WRITE_OFF'],
+      CONSENT_MISSING: ['ACCEPT_WITH_CONSENT', 'REFUND', 'WRITE_OFF'],
+      HISTORY_WRITE_FAILED: ['CLOSE_HISTORY_GAP'],
       UNDERPAYMENT: ['ACCEPT_WITH_CONSENT', 'REFUND', 'WRITE_OFF'],
       OVERPAYMENT: ['ACCEPT_WITH_CONSENT', 'REFUND', 'WRITE_OFF'],
       LATE_PAYIN: ['REQUOTE', 'ACCEPT_WITH_CONSENT', 'REFUND', 'WRITE_OFF'],
@@ -56,10 +62,10 @@ describe('OPS closed sets', () => {
 
 describe('OPS ids and amounts', () => {
   it('derives deterministic ids', () => {
-    expect(deriveCaseId('HOLD', 's1')).toBe(`case-${lpDigestHex(['ops-case', 'HOLD', 's1']).slice(0, 32)}`);
-    expect(deriveCaseId('HOLD', 's1')).toMatch(/^case-[0-9a-f]{32}$/);
-    expect(deriveCaseId('HOLD', 's1')).not.toBe(deriveCaseId('PAUSE', 's1'));
-    expect(deriveCaseId('HOLD', 's1')).not.toBe(deriveCaseId('HOLD', 's2'));
+    expect(deriveCaseId('REQUOTE', 's1')).toBe(`case-${lpDigestHex(['ops-case', 'REQUOTE', 's1']).slice(0, 32)}`);
+    expect(deriveCaseId('REQUOTE', 's1')).toMatch(/^case-[0-9a-f]{32}$/);
+    expect(deriveCaseId('REQUOTE', 's1')).not.toBe(deriveCaseId('PAUSE', 's1'));
+    expect(deriveCaseId('REQUOTE', 's1')).not.toBe(deriveCaseId('REQUOTE', 's2'));
     expect(deriveDecisionId('c', 'REFUND', 'o')).toBe(`dec-${lpDigestHex(['ops-decision', 'c', 'REFUND', 'o']).slice(0, 32)}`);
     expect(deriveDecisionId('c', 'REFUND', 'o')).not.toBe(deriveDecisionId('c', 'WRITE_OFF', 'o'));
     expect(deriveDecisionId('c', 'REFUND', 'o')).not.toBe(deriveDecisionId('c', 'REFUND', 'p'));
@@ -185,7 +191,11 @@ describe.each(['A', 'B'] as const)('OPS openCase (fakes %s)', (v) => {
       for (const reason of REASONS[kind]) {
         n += 1;
         const amounts = kind === 'UNDERPAYMENT' ? { unit: 'USDC_UNITS' as const, expected: usdcUnits(10n), confirmed: usdcUnits(9n) } : kind === 'OVERPAYMENT' ? { unit: 'USDC_UNITS' as const, expected: usdcUnits(10n), confirmed: usdcUnits(11n) } : null;
-        const r = await rig.queue.openCase(openInput({ kind, reason, subject: `s${n}`, amounts, options: [OPT.writeOff(), ...(kind === 'PAUSE' ? [OPT.unpause()] : [])].filter((o) => ALLOWED_ACTIONS[kind].includes(o.action)) }));
+        const wo = amounts === null ? OPT.writeOff() : { ...OPT.writeOff(1n), unit: 'USDC_UNITS' as const, amount: usdcUnits(1n), asset: USDC };
+        const pool: CaseOption[] = [wo, OPT.unpause(), OPT.adopt(), OPT.reverse(), OPT.closeHistory()];
+        const options = pool.filter((o) => ALLOWED_ACTIONS[kind].includes(o.action) && (o.action !== 'WRITE_OFF' || kind !== 'PAUSE'));
+        const bookedEntryRef = kind === 'UNMATCHED_FILL' ? 'booked-1' : null;
+        const r = await rig.queue.openCase(openInput({ kind, reason, subject: `s${n}`, amounts, bookedEntryRef, options }));
         expect(r, `${kind}/${reason}`).toMatchObject({ kind: 'OK', replayed: false });
       }
     }

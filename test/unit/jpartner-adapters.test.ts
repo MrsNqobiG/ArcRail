@@ -168,6 +168,7 @@ describe('CpnStubPartner mapping (event types from references_webhooks_webhook-e
     const q = new CpnStubPartner({ ...base, verifySignature: () => true, rfiPaymentId: (n) => optString(n, 'paymentRef') });
     for (const t of ['cpn.rfi.informationRequired', 'cpn.rfi.rejected']) {
       expect(q.verifyCallback(env(t, { paymentRef: 'pay-1' }), {})).toMatchObject({ kind: 'OK', value: { payoutId: 'pay-1', state: 'PENDING', reason: t, notice: 'RFI' } });
+      expect(q.verifyCallback(env(t, { paymentRef: 'pay-1' }), {})).toMatchObject({ replayed: false });
       expect(q.verifyCallback(env(t, { id: 'pay-1' }), {})).toMatchObject({ code: 'MALFORMED' });
       expect(q.verifyCallback(env(t, { paymentRef: 'has space' }), {})).toMatchObject({ code: 'MALFORMED' });
       expect(v(env(t, { paymentRef: 'pay-1' }))).toMatchObject({ code: 'MALFORMED' });

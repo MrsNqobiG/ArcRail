@@ -392,7 +392,7 @@ export class MapPaymentStore implements PaymentStorePort {
   async putCase(c: CaseRecord): Promise<PortResult<CaseRecord, CaseRejectCode>> {
     const before = faultBefore(this.#faults, 'putCase');
     if (before !== null) return before;
-    const verdict = decidePutCase(c, this.#cases.get(c.caseId) ?? null, (d) => this.#decisions.get(d) ?? null);
+    const verdict = decidePutCase(c, this.#cases.get(c.caseId) ?? null, (d) => this.#decisions.get(d) ?? null, this.#records.get(c.subject) ?? null);
     if (verdict.kind !== 'PUT') return verdict;
     this.#cases.set(c.caseId, c);
     return afterCommit(this.#faults, 'putCase', ok(c, false));
@@ -855,7 +855,7 @@ export class EventSourcedPaymentStore implements PaymentStorePort {
   async putCase(c: CaseRecord): Promise<PortResult<CaseRecord, CaseRejectCode>> {
     const before = faultBefore(this.#faults, 'putCase');
     if (before !== null) return before;
-    const verdict = decidePutCase(c, this.#case(c.caseId), (d) => this.#decision(d));
+    const verdict = decidePutCase(c, this.#case(c.caseId), (d) => this.#decision(d), this.#fold(c.subject as PaymentId));
     if (verdict.kind !== 'PUT') return verdict;
     this.#append({ type: 'CASE_PUT', c });
     return afterCommit(this.#faults, 'putCase', ok(c, false));

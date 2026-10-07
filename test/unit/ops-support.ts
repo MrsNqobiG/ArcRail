@@ -36,9 +36,20 @@ export const USDC = ledgerAssetCode('USDC');
 export const ZAR = ledgerAssetCode('ZAR');
 
 export const EV = ['evidence-1'];
-export const FACTS_NONE: PaymentFacts = { terminal: true, p6Posted: true, arcLeg: 'NONE', proof: null };
-export const FACTS_UNRESOLVED: PaymentFacts = { terminal: false, p6Posted: false, arcLeg: 'UNRESOLVED', proof: null };
-export const FACTS_PROVEN: PaymentFacts = { terminal: true, p6Posted: true, arcLeg: 'PROVEN_NOT_SENT', proof: 'ABORT_ACCEPTED' };
+const CAPS = {
+  refundCap: { unit: 'USDC_UNITS' as const, amount: 1000n },
+  writeOffCap: { unit: 'CBS_MINOR' as const, amount: 1000n },
+  returnClaimed: false,
+};
+export const FACTS_NONE: PaymentFacts = { terminal: true, p6Posted: false, arcLeg: 'NONE', proof: null, ...CAPS };
+export const FACTS_NONE_P6: PaymentFacts = { ...FACTS_NONE, p6Posted: true };
+export const FACTS_UNRESOLVED: PaymentFacts = { terminal: false, p6Posted: false, arcLeg: 'UNRESOLVED', proof: null, ...CAPS };
+/** Proven never sent and P6 not yet posted (refundable). */
+export const FACTS_PROVEN: PaymentFacts = { terminal: true, p6Posted: false, arcLeg: 'PROVEN_NOT_SENT', proof: 'ABORT_ACCEPTED', ...CAPS };
+/** Proven never sent with P6 already posted by the proof (retryable, not refundable). */
+export const FACTS_PROVEN_P6: PaymentFacts = { ...FACTS_PROVEN, p6Posted: true };
+export const FACTS_SENT: PaymentFacts = { terminal: true, p6Posted: false, arcLeg: 'SENT', proof: null, ...CAPS };
+export const SETTLEMENT = 'a'.repeat(64);
 
 export function legs(amount: bigint, from = CLIENT_ACC, to = SETTLE): Leg[] {
   return [
@@ -55,9 +66,36 @@ export const OPT = {
     asset: USDC,
     reserved: usdcUnits(reserved),
     requoted: usdcUnits(requoted),
-    legs: legs(100n),
+    legs: legs(requoted),
+    quoteId: 'quote-new',
+    rateNum: 18n,
+    rateDen: 1n,
+    expiresAt: '2026-10-07T12:00:00Z',
+    settlementDigest: SETTLEMENT,
   }),
-  accept: (amount = 900n): Opt<'ACCEPT_WITH_CONSENT'> => ({ action: 'ACCEPT_WITH_CONSENT', optionId: 'o-accept', unit: 'USDC_UNITS', acceptedAmount: usdcUnits(amount) }),
+  accept: (amount = 900n): Opt<'ACCEPT_WITH_CONSENT'> => ({
+    action: 'ACCEPT_WITH_CONSENT',
+    optionId: 'o-accept',
+    unit: 'USDC_UNITS',
+    acceptedAmount: usdcUnits(amount),
+    quoteId: null,
+    settlementDigest: SETTLEMENT,
+  }),
+  adopt: (ref = 'booked-1', amount = 900n): Opt<'ADOPT_FILL'> => ({
+    action: 'ADOPT_FILL',
+    optionId: 'o-adopt',
+    bookedEntryRef: ref,
+    unit: 'USDC_UNITS',
+    asset: USDC,
+    adoptedAmount: usdcUnits(amount),
+    quoteId: 'quote-adopted',
+    rateNum: 18n,
+    rateDen: 1n,
+    expiresAt: '2026-10-07T12:00:00Z',
+    settlementDigest: SETTLEMENT,
+  }),
+  reverse: (ref = 'booked-1', amount = 900n): Opt<'REVERSE_FILL'> => ({ action: 'REVERSE_FILL', optionId: 'o-reverse', bookedEntryRef: ref, legs: legs(amount, SETTLE, CLIENT_ACC) }),
+  closeHistory: (): Opt<'CLOSE_HISTORY_GAP'> => ({ action: 'CLOSE_HISTORY_GAP', optionId: 'o-history' }),
   refundP6: (amount = 500n): Opt<'REFUND'> => ({ action: 'REFUND', optionId: 'o-refund', template: 'P6', legs: legs(amount) }),
   refundP13: (amount = 500n): Opt<'REFUND'> => ({ action: 'REFUND', optionId: 'o-refund13', template: 'P13_PAYIN_REFUND', legs: legs(amount) }),
   retry: (): Opt<'RETRY_AS_NEW_PAYMENT'> => ({ action: 'RETRY_AS_NEW_PAYMENT', optionId: 'o-retry' }),
@@ -79,8 +117,8 @@ export function makeRig(variant: Variant, over: { config?: Partial<OpsConfig>; a
   const a = variant === 'A';
   const cases = a ? new MapCaseStore() : new LogCaseStore();
   const consentStore = a ? new FlagConsentStore() : new LogConsentStore();
-  const ledgerStore = a ? new MapLedger() : new LogLedger();
   const payments = a ? new MapPaymentFacts() : new LogPaymentFacts();
+  const ledgerStore = a ? new MapLedger(payments) : new LogLedger(payments);
   const control = a ? new SetRailControl(['item-1', 'rail']) : new LogRailControl(['item-1', 'rail']);
   const staff = a
     ? new AliasStaffDirectory({ 'staff:alice': 'alice', 'Alice@x': 'alice', 'staff:bob': 'bob', 'staff:carol': 'carol' })
@@ -123,7 +161,17 @@ export function openInput(over: Partial<OpenCaseInput> = {}): OpenCaseInput {
 }
 
 export function req(caseId: string, action: OpsActionRequest['action'], optionId: string, over: Partial<OpsActionRequest> = {}): OpsActionRequest {
-  return { caseId, action, optionId, approvers: [ALICE, BOB], reason: 'operator reviewed', evidenceRefs: EV, consentRef: null, ...over };
+  return { caseId, action, optionId, approvers: [ALICE, BOB], reason: 'operator reviewed', evidenceRefs: EV, consentRef: null, confirmedDigests: [AUTO, AUTO], ...over };
+}
+
+const AUTO = '(auto)';
+
+/** Runs an action with each approver confirming the stored option digest, unless the request sets its own digests. */
+export async function exec(rig: Rig, r: OpsActionRequest, queue: OpsQueue = rig.queue) {
+  const got = await rig.cases.get(r.caseId);
+  const opt = got.kind === 'OK' ? got.value.options.find((o) => o.optionId === r.optionId && o.action === r.action) : undefined;
+  const auto = r.confirmedDigests[0] === AUTO && r.confirmedDigests[1] === AUTO && opt !== undefined;
+  return queue.execute(auto ? { ...r, confirmedDigests: [opt.digest, opt.digest] } : r);
 }
 
 /** Opens a case and returns its record (throws if refused). */

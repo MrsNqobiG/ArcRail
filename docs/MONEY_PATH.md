@@ -69,6 +69,7 @@ Status: Phase 2 skeleton. Most paths hold interfaces and `not implemented: <unit
 | `src/ops/ports.ts` | 7 | OPS ports (types only): case store, ConsentPort, ledger, staff directory, payment facts and retry, rail control, audit store |
 | `src/ops/audit.ts` | 7 | OPS append-only hash-chained audit of every case opening and every action, refused or applied |
 | `src/ops/queue.ts` | 7 | OPS case queue: two distinct authenticated humans, consent bound to the option, refund and retry only after a D-6 proof, ledger read-back must balance before a case closes, gate on CF-31, amounts only from the server-side option |
+| `src/journey/quote/fill.ts` | 7 | JQUOTE fill desk (design delta 1 D-1): one pricing code per (payment, quote request) key, rate lock = the code expiresAt, requote guard (no second code while an outcome is unknown, a conversion is booked or a refused booked fill is unresolved), fill-event authenticity then dedupe on `fill:<codeId>` (SIGNAL_CONFLICT quarantines), checks 1-5 with ledger read-back, refused booked fills kept and sent to an OPS requote case, fill timeout, ADOPT and REVERSE bookkeeping |
 
 ## Named parts
 
@@ -150,6 +151,7 @@ Every named part of every item maps to at least one listed path and an anchor sy
 | 7 | OPS ports (types only) | `src/ops/ports.ts` | `ConsentPort` |
 | 7 | OPS append-only hash-chained audit | `src/ops/audit.ts` | `AuditLog` |
 | 7 | OPS operator case queue and actions | `src/ops/queue.ts` | `OpsQueue` |
+| 7 | JQUOTE D-1 fill desk: code requests, fill checks 1-5, dedupe and requote cases | `src/journey/quote/fill.ts` | `FillDesk` |
 
 ## Excluded from the import-graph closure
 

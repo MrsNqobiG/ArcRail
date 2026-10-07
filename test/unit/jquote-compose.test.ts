@@ -19,7 +19,7 @@ import {
 import type { CrossBorderConfig, JourneyMoney, JourneyQuote, JourneyQuoteRequest, QuoteConfig, QuoteDeps, QuoteRefusal, SettlementAsset, WiredPayoutPartner } from '../../src/journey/quote/compose.js';
 import { fiatAmount } from '../../src/journey/quote/fiat.js';
 import { LotTableFx, LotTablePayoutQuotes, ManualClock } from '../../src/journey/quote/fakes.js';
-import type { FxPort, PartnerKind, PayoutQuote, PayoutQuotePort } from '../../src/journey/quote/ports.js';
+import type { FxLocker, PartnerKind, PayoutQuote, PayoutQuotePort } from '../../src/journey/quote/ports.js';
 
 // ---------------------------------------------------------------------------
 // Fixture: USDC at ledger p = 6 on ARC; ZAR home; a ZAR->USDC lot of 37 cents
@@ -125,10 +125,10 @@ function refusal(code: QuoteRefusal, detail: string): PortResult<never, QuoteRef
 }
 
 /** Counts port calls and lets a test rewrite or replace answers. */
-function spyFx(inner: FxPort, onCall?: (n: bigint) => void, rewrite?: (r: Awaited<ReturnType<FxPort['lockRate']>>) => Awaited<ReturnType<FxPort['lockRate']>>): FxPort & { calls: bigint } {
+function spyFx(inner: FxLocker, onCall?: (n: bigint) => void, rewrite?: (r: Awaited<ReturnType<FxLocker['lockRate']>>) => Awaited<ReturnType<FxLocker['lockRate']>>): FxLocker & { calls: bigint } {
   const spy = {
     calls: 0n,
-    async lockRate(...args: Parameters<FxPort['lockRate']>) {
+    async lockRate(...args: Parameters<FxLocker['lockRate']>) {
       spy.calls += 1n;
       const r = await inner.lockRate(...args);
       onCall?.(spy.calls);
@@ -622,7 +622,7 @@ describe('JQUOTE rate lock and expiry', () => {
 
   it('a clock that steps backward during composition fails the final conservation check (fail closed)', async () => {
     const w = world();
-    const skew: FxPort = {
+    const skew: FxLocker = {
       lockRate: async (k, r) => {
         w.clock.advance(-50_000n);
         return w.fx.lockRate(k, r);
@@ -927,10 +927,10 @@ describe('JQUOTE a port remainder worth one target unit or more is refused, neve
 });
 
 describe('JQUOTE the composer asks each port for the right side (m5)', () => {
-  function recorders(w: World): { fx: FxPort; po: PayoutQuotePort; fxSides: string[]; poSides: string[] } {
+  function recorders(w: World): { fx: FxLocker; po: PayoutQuotePort; fxSides: string[]; poSides: string[] } {
     const fxSides: string[] = [];
     const poSides: string[] = [];
-    const fx: FxPort = {
+    const fx: FxLocker = {
       lockRate: async (k, r) => {
         fxSides.push(r.side);
         return w.fx.lockRate(k, r);

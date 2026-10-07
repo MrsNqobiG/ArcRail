@@ -283,6 +283,10 @@ export function evaluateJournal(req: JournalRequest, view: LedgerView): PortResu
   if (req.template === 'P1_RESERVE' && view.paymentJournals(req.refs.paymentId as PaymentId).some((j) => j.template === 'P1_RESERVE')) {
     return rejected('BINDING_MISMATCH', 'a payment has exactly one P1 reservation (§9.3 P1 = P6, §10.2 one P1 key)');
   }
+  if (ONCE_PER_PAYMENT.includes(req.template)) {
+    const why = oncePerPaymentRule(req, view.paymentJournals(req.refs.paymentId as PaymentId));
+    if (why !== null) return rejected('BINDING_MISMATCH', why);
+  }
   if (req.template === 'P11_PARTNER_CLAIM' || req.template === 'P2R_PARTNER_RETURN') {
     const why = partnerReturnRule(req, view.paymentJournals(req.refs.paymentId as PaymentId));
     if (why !== null) return rejected('BINDING_MISMATCH', why);
@@ -292,6 +296,31 @@ export function evaluateJournal(req: JournalRequest, view: LedgerView): PortResu
     if (why !== null) return rejected('BINDING_MISMATCH', why);
   }
   return checkTotals(req, view);
+}
+
+/** Templates a payment posts at most once (§9.2 P2, P2I, P2P, P11, P2R; §9.3 "never released twice"). */
+const ONCE_PER_PAYMENT: readonly PostingTemplateId[] = Object.freeze([
+  'P2_SETTLE_EXTERNAL',
+  'P2I_SETTLE_INTERNAL',
+  'P2P_PARTNER_FUNDED',
+  'P11_PARTNER_CLAIM',
+  'P2R_PARTNER_RETURN',
+]);
+
+/**
+ * Exactly-once per payment: no second journal of the same template; P2 and P2I
+ * are releases, so none follows another release (P2, P2I or P6); a P11 claim
+ * does not follow the partner's return P2R (the late P2R after P11 is F-17's).
+ * Null when it holds.
+ */
+function oncePerPaymentRule(req: JournalRequest, journals: readonly JournalRequest[]): string | null {
+  if (journals.some((j) => j.template === req.template)) return `a payment posts ${req.template} once (§9.2, §9.3)`;
+  if (RELEASING_TEMPLATES.includes(req.template)) {
+    const released = journals.find((j) => RELEASING_TEMPLATES.includes(j.template));
+    if (released !== undefined) return `the reservation was already released by ${released.template} (§9.3: exactly once)`;
+  }
+  if (req.template === 'P11_PARTNER_CLAIM' && journals.some((j) => j.template === 'P2R_PARTNER_RETURN')) return 'P11 does not follow P2R: the partner already returned the USDC (F-17)';
+  return null;
 }
 
 /**
