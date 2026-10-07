@@ -32,10 +32,10 @@ Status: Phase 2 skeleton. Most paths hold interfaces and `not implemented: <unit
 | `src/cbs/result.ts` | 10 | CONTRACT §1.4 result model, REJECTED codes and AMBIGUOUS output |
 | `src/cbs/keys.ts` | 10 | CONTRACT §1.3 idempotency keys that every translator call carries |
 | `src/nova-ports/ids.ts` | 10 | PORTS Nova ports: identifiers, idempotency keys and the OK/REJECTED/AMBIGUOUS result model (NOVA_ARC_DESIGN §7.1) |
-| `src/nova-ports/ledger.ts` | 10 | PORTS LedgerPort shapes and the one journal decision: §7.2 template ids, rail-level refs, balance, P7 mirror of P2/P2I/P3 only, P6 mirror of the payment's own P1 and released once (after P2R or P11 when P2P is posted), account totals and customer funds (NOVA_ARC_DESIGN §7.2, §9) |
+| `src/nova-ports/ledger.ts` | 10 | PORTS LedgerPort shapes and the one journal decision: §7.2 template ids, rail-level refs, balance, P7 mirror of P2/P2I/P3 only, one P1 per payment, P6 mirror of that P1 and released once (after P2R or P11 when P2P is posted), P11 and P2R moving exactly the payment's P2P amount, account totals and customer funds (NOVA_ARC_DESIGN §7.2, §9) |
 | `src/nova-ports/wallet-registry.ts` | 10 | PORTS WalletRegistryPort shapes and registration decision, ArcTestnet only (NOVA_ARC_DESIGN §7.4) |
 | `src/nova-ports/receiver.ts` | 10 | PORTS ReceiverPort: the receiver's chosen payout method and destination (NOVA_ARC_DESIGN §7.5a) |
-| `src/nova-ports/payment-store.ts` | 7 | PORTS PaymentStorePort: payment working state, one inbox for signals, ranges and claims, submit marker, DFNS hash link, leg order, P6 only with a posted P1, the F-17 close (P6 with P11 or P2R) and Ops cases, REVERSED only via the P7 of P2/P2I (NOVA_ARC_DESIGN §7.3, §6.5, §8.4 check 3, §9.2, §12 F-17) |
+| `src/nova-ports/payment-store.ts` | 7 | PORTS PaymentStorePort: payment working state, one inbox for signals, ranges and claims, submit marker, DFNS hash link, leg order, P6 only with a posted P1, the F-17 close (P6 with P11 or P2R, the claimed return equal to the payment's amount; a later P2R alone after P11) and Ops cases, REVERSED only via the P7 of P2/P2I (NOVA_ARC_DESIGN §7.3, §6.5, §8.4 check 3, §9.2, §12 F-17) |
 | `src/status/index.ts` | 7 | PORTS status model: stage, stage → TransactionStatus table, §7.3 failure reasons, transitions with evidence and DFNS request state (NOVA_ARC_DESIGN §13) |
 | `src/status/journey.ts` | 7 | PORTS journey: payer's pay-in choice × receiver's payout choice → legs (NOVA_ARC_DESIGN §4.1) |
 | `src/nova-ports/gas-dust.ts` | 8 | PORTS GasDustStore: the 18-dp gas-dust and receipt-dust sub-ledger (P4D, P5, P9D), exact U1 splits, sweep decision (NOVA_ARC_DESIGN §7.3, §9.2) |
@@ -56,8 +56,19 @@ Status: Phase 2 skeleton. Most paths hold interfaces and `not implemented: <unit
 | `src/gateway/index.ts` | 4 | F2 thin signing gateway (checks before every DFNS transfer) |
 | `src/gateway/wrapper.ts` | 4 | F2b wrapper-call rule (allow-list, inner-call decoding) |
 | `src/journey/quote/fiat.ts` | 1 | JQUOTE `FiatMinor<CCY>` branded fiat amounts (one per currency), checked constructor and same-currency add/subtract, built on U1 patterns without modifying U1 |
-| `src/journey/quote/ports.ts` | 10 | JQUOTE FxPort (Nova FX/OTC engine via ConversionPort, payer FIAT only) and PayoutQuotePort (off-ramp partner, receiver FIAT_BANK only) shapes and exact integer quote checks, including the remainder bound (below one convertible step of the quoted rate) |
+| `src/journey/quote/ports.ts` | 10 | JQUOTE FxPort (Nova FX/OTC engine via ConversionPort, payer FIAT only) and PayoutQuotePort (off-ramp partner, receiver FIAT_BANK only) shapes and exact integer quote checks, including the remainder value bound (a remainder is accepted only if worth less than one target minor unit at the quoted rate) |
 | `src/journey/quote/compose.ts` | 7 | JQUOTE all-in journey quote: only the legs each pay-in x payout combination needs, customer fee F (platform fee + charged gas), gas allowance split and dust records, expiry and rate locks, cross-border OFF (demo gate bound to the settlement adapter's chain ID and the root-declared partner kind), binding digest, conservation re-check (NOVA_ARC_DESIGN §4.1, §9.2) |
+| `src/journey/payout/partner/port.ts` | 10 | JPARTNER PayoutPartner port for FIAT_BANK payouts: request by opaque recipientRef only, partner states, callback shape, cross-border gate shape, canonical request for same-key comparison |
+| `src/journey/payout/partner/tracker.ts` | 7 | JPARTNER callback decision core: dedupe on partner event id and payout state, stale, out-of-order and PAID/FAILED conflict refused, refund, claim, refund-failed and conflict reports (a contradiction after RETURNED included); ARRIVED only after an applied PAID |
+| `src/journey/payout/partner/core.ts` | 7 | JPARTNER shared adapter core: exactly-once createPayout on the idempotency key, amount, recipient, currency, cross-border (OFF without a legal opinion; country or currency; demo flag only on chain ID 5042002) and funding checks (bound to key, recipient, currency and amount; one funding licenses one payout), authenticity-then-tracker callback handling |
+| `src/journey/payout/partner/fake.ts` | 3 | JPARTNER clearly labelled FAKE partner (HMAC-SHA256 over raw body, constant-time compare), tests and testnet demo only |
+| `src/journey/payout/partner/cpn-stub.ts` | 3 | JPARTNER CPN-shaped STUB adapter citing the archived CPN docs: injected signature check, event-type to payout-state mapping, refund fail-closed |
+| `src/journey/recipients/index.ts` | 10 | JPARTNER BankRecipient PII (encrypted through an injected KeyManagement, opaque recipientRef only, redacted everywhere, deleted after the stated retention) and WalletRecipient screening (branded, registry-checked screened wallet; local blocklist, screening port, travel-rule hook, fail closed) |
+| `src/history/index.ts` | 10 | HIST HistoryPort: append-only client transaction history, idempotent key, corrections, retry linkage, document references only (design delta 1 D-4) |
+| `src/ops/types.ts` | 7 | OPS operator case kinds, closed reason codes and per-kind actions, server-side options (REQUOTE, ACCEPT_WITH_CONSENT, REFUND, RETRY_AS_NEW_PAYMENT, WRITE_OFF, release, unpause), balanced-leg check, option digest a consent binds to, D-6 not-sent proofs (design delta 1 D-2, D-6) |
+| `src/ops/ports.ts` | 7 | OPS ports (types only): case store, ConsentPort, ledger, staff directory, payment facts and retry, rail control, audit store |
+| `src/ops/audit.ts` | 7 | OPS append-only hash-chained audit of every case opening and every action, refused or applied |
+| `src/ops/queue.ts` | 7 | OPS case queue: two distinct authenticated humans, consent bound to the option, refund and retry only after a D-6 proof, ledger read-back must balance before a case closes, gate on CF-31, amounts only from the server-side option |
 
 ## Named parts
 
@@ -126,6 +137,19 @@ Every named part of every item maps to at least one listed path and an anchor sy
 | 1 | `FiatMinor<CCY>` per payout currency | `src/journey/quote/fiat.ts` | `FiatMinor` |
 | 10 | journey FX lock and partner payout quote exactness | `src/journey/quote/ports.ts` | `checkPayoutQuote` |
 | 7 | all-in journey quote composition and conservation | `src/journey/quote/compose.ts` | `checkConservation` |
+| 7 | JPARTNER payout callback dedupe, ordering and reports | `src/journey/payout/partner/tracker.ts` | `PayoutTracker` |
+| 7 | JPARTNER exactly-once partner payout creation and gates | `src/journey/payout/partner/core.ts` | `PartnerCore` |
+| 3 | JPARTNER fake partner callback authenticity | `src/journey/payout/partner/fake.ts` | `FakePartner` |
+| 3 | JPARTNER CPN stub callback authenticity and mapping | `src/journey/payout/partner/cpn-stub.ts` | `CpnStubPartner` |
+| 10 | JPARTNER BankRecipient encryption, redaction and retention | `src/journey/recipients/index.ts` | `BankRecipientStore` |
+| 10 | JPARTNER WalletRecipient screening | `src/journey/recipients/index.ts` | `screenWalletRecipient` |
+| 10 | HIST append-only client history with idempotent key and document references | `src/history/index.ts` | `HistoryPort` |
+| 7 | OPS closed reason codes and per-kind actions | `src/ops/types.ts` | `REASONS` |
+| 7 | OPS D-6 proofs that release a refund or retry (an `externalId` miss is not one) | `src/ops/types.ts` | `NOT_SENT_PROOFS` |
+| 7 | OPS balanced single-asset legs and option digest a consent binds to | `src/ops/types.ts` | `legsProblem` |
+| 7 | OPS ports (types only) | `src/ops/ports.ts` | `ConsentPort` |
+| 7 | OPS append-only hash-chained audit | `src/ops/audit.ts` | `AuditLog` |
+| 7 | OPS operator case queue and actions | `src/ops/queue.ts` | `OpsQueue` |
 
 ## Excluded from the import-graph closure
 

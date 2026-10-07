@@ -17,8 +17,11 @@
  *   dust (dust goes to suspense with a record, never dropped);
  * - PAYOUT, only when the receiver picks FIAT_BANK: USDC→payout currency and
  *   the partner's fee via PayoutQuotePort.
- * It returns the all-in recipient amount, the expiry (the earliest of our own
- * TTL and every rate lock) and the rate locks themselves.
+ * It returns the all-in recipient amount, the customer fee `F` (design §9.2:
+ * Raayl's platform fee plus any network fee charged to the payer, which goes
+ * through `F` and never after the fact, K-12), the expiry (the earliest of
+ * our own TTL and every rate lock) and the rate locks themselves. The Arc
+ * amount `A` and `F` are the two numbers P1 reserves (A + F).
  *
  * Rules: integer bigint only (MC-01); only U1's checked add/subtract and
  * conversions on U1 amounts (no re-brand of raw arithmetic); idempotency keys
@@ -29,20 +32,23 @@
  * flags are honoured (`journeyEnabled`): a method is never silently switched.
  * Cross-border (a fiat leg in a currency other than the home currency) is
  * refused unless the explicitly labelled testnet demo mode is set, and even
- * then only through a non-LIVE payout partner (stub or fake), until a legal
- * opinion is recorded (CO-1 v3 D5).
+ * then only when the settlement network adapter itself is pinned to Arc
+ * testnet (chain ID 5042002, C-01) and only through a payout partner that the
+ * composition root declares non-LIVE (stub or fake), until a legal opinion is
+ * recorded (CO-1 v3 D5).
  */
 import { addCbsMinor, cbsMinor, cbsMinorToNativeWei, nativeWei, nativeWeiToCbsMinor, subtractCbsMinor } from '../../amounts/index.js';
 import type { CbsMinor, CbsPrecision, NativeWei } from '../../amounts/index.js';
 import type { RatioQuote, QuoteRequest } from '../../nova-ports/conversion.js';
 import { ambiguous, idempotencyKey, ledgerAssetCode, lpDigestHex, ok, rejected } from '../../nova-ports/ids.js';
 import type { AssetId, FiatCode, IdempotencyKey, LedgerAssetCode, NetworkId, PortResult } from '../../nova-ports/ids.js';
+import type { NetworkAdapter } from '../../network/types.js';
 import { journeyEnabled, journeyLegs } from '../../status/journey.js';
 import type { JourneyFlags, PayInMethod, PayoutMethod } from '../../status/journey.js';
 import type { LegKind } from '../../status/index.js';
 import { fiatFromLedger, fiatText } from './fiat.js';
 import type { FiatAmount } from './fiat.js';
-import { checkFxLock, checkPayoutQuote } from './ports.js';
+import { checkFxLock, checkPayoutQuote, remainderBelowOneUnit } from './ports.js';
 import type { Clock, FxLock, FxPort, PartnerKind, PayoutQuote, PayoutQuotePort, PayoutQuoteRequest } from './ports.js';
 
 // ---------------------------------------------------------------------------
@@ -62,7 +68,9 @@ export interface SettlementAsset {
 /**
  * Cross-border switch. OFF until a legal opinion is recorded (CO-1 v3 D5);
  * there is deliberately no production "ON" value. The demo mode is testnet
- * only (chain ID 5042002, C-01) and serves only a non-LIVE payout partner.
+ * only (chain ID 5042002, C-01): both this config literal and the chain ID the
+ * settlement network adapter is pinned to must be 5042002, and it serves only
+ * a payout partner the composition root declares non-LIVE.
  */
 export type CrossBorderConfig =
   | { readonly mode: 'OFF' }
@@ -80,14 +88,36 @@ export interface QuoteConfig {
   /** Our own quote lifetime, > 0. The quote expires at the earliest of this and every rate lock. */
   readonly ttlMs: bigint;
   readonly gasCharging: GasCharging;
+  /**
+   * Raayl's customer (platform) fee per payment, settlement-asset ledger minor
+   * units, posted to GL-6 by P3 (design §9.2 `F`); 0 for none. A flat amount
+   * supplied by Raayl: its fee model is not known yet (K-12), so this package
+   * computes no fee.
+   */
+  readonly platformFeeMinor: CbsMinor;
+}
+
+/** The settlement network adapter's own pinned identity (`NetworkAdapter.network`, `.chainId`). */
+export type SettlementNetworkPin = Pick<NetworkAdapter, 'network' | 'chainId'>;
+
+/**
+ * A payout partner as wired by the composition root. `kind` is the root's own
+ * declaration; the port's self-declared `partnerKind` must agree with it, or
+ * the quote fails closed (QuoteIntegrityError).
+ */
+export interface WiredPayoutPartner {
+  readonly port: PayoutQuotePort;
+  readonly kind: PartnerKind;
 }
 
 export interface QuoteDeps {
   readonly clock: Clock;
+  /** The settlement network adapter (its pinned network and chain ID), never a config value. */
+  readonly settlementNetwork: SettlementNetworkPin;
   /** Required for a FIAT pay-in; null refuses such a quote (METHOD_NOT_ENABLED). */
   readonly fx: FxPort | null;
   /** Required for a FIAT_BANK payout; null refuses such a quote (METHOD_NOT_ENABLED). */
-  readonly payout: PayoutQuotePort | null;
+  readonly payout: WiredPayoutPartner | null;
   /** Upper bound of the network fee of one transfer, native 18-dp view (from the gas unit, U11). */
   networkFeeAllowanceWei(network: NetworkId): NativeWei;
 }
@@ -163,11 +193,34 @@ export interface PayoutLine {
   readonly expiresAtMs: bigint;
 }
 
-/** Sub-unit value set aside by the quote, each with its named suspense account. Never dropped. */
+/**
+ * Sub-unit amounts the quote sets aside or leaves uncharged. Never dropped.
+ * - FX_REMAINDER: fiat below one convertible step of the FX rate; Nova's
+ *   engine posts it to its own suspense [A-51].
+ * - PAYOUT_REMAINDER: payer USDC below one convertible step of the partner's
+ *   rate (the payer's value). Proposed suspense `GL-4 arc.quoteDust` is NOT a
+ *   design §9.1 account yet; who owns it is a human decision (OPEN_QUESTIONS
+ *   Q-N23, the K-13 analogue). Until decided, nothing downstream may sweep it.
+ * - GAS_ALLOWANCE_SUBMINOR: the part of the network fee ALLOWANCE below one
+ *   minor unit, not charged to the payer. It is not value held anywhere, so
+ *   it is NON_POSTING: the real gas and its sub-minor dust are posted from
+ *   the receipt by P4/P4D into GL-4 `arc.gasDust.<from>` (design §9.2).
+ *   Posting this record too would double-count gas dust (Q-N23).
+ */
 export type DustRecord =
   | { readonly source: 'FX_REMAINDER'; readonly fiat: FiatAmount; readonly suspense: 'NOVA_FX_ENGINE_SUSPENSE' }
-  | { readonly source: 'GAS_ALLOWANCE_SUBMINOR'; readonly wei: NativeWei; readonly suspense: 'GL-4 arc.gasDust' }
+  | { readonly source: 'GAS_ALLOWANCE_SUBMINOR'; readonly wei: NativeWei; readonly posting: 'NON_POSTING' }
   | { readonly source: 'PAYOUT_REMAINDER'; readonly usdcMinor: CbsMinor; readonly suspense: 'GL-4 arc.quoteDust' };
+
+/** Design §9.2 `F`, settlement-asset ledger minor units: what P1 reserves on top of the Arc amount `A`. */
+export interface CustomerFee {
+  /** Raayl's platform fee (GL-6 via P3). */
+  readonly platformMinor: CbsMinor;
+  /** Whole minor units of the network fee allowance charged to the payer (equals `arcTransfer.gasChargeMinor`). */
+  readonly gasMinor: CbsMinor;
+  /** F = platform + gas. */
+  readonly totalMinor: CbsMinor;
+}
 
 export interface JourneyQuote {
   /** Deterministic digest of every field below: the binding a payment must carry unchanged. */
@@ -184,6 +237,8 @@ export interface JourneyQuote {
   readonly recipient: JourneyMoney;
   /** recipient minor units per payer minor unit, all fees and conversions included. */
   readonly allInRate: RatioQuote;
+  /** F of design §9.2; P1 reserves `arcTransfer.amount` (A) + `customerFee.totalMinor` (F). */
+  readonly customerFee: CustomerFee;
   readonly convertIn: ConvertInLine | null;
   readonly arcTransfer: ArcTransferLine;
   readonly payoutLine: PayoutLine | null;
@@ -223,21 +278,38 @@ export class QuoteIntegrityError extends Error {
 // Decisions.
 // ---------------------------------------------------------------------------
 
+/** Arc testnet chain ID (C-01): the only chain the cross-border demo may run on. */
+const ARC_TESTNET_CHAIN_ID = 5042002n;
+
+/** The fiat currency of a FIAT pay-in; null for a stablecoin pay-in. */
+function payInCurrency(m: PayInMethod): FiatCode | null {
+  return m.method === 'FIAT' ? m.currency : null;
+}
+
+/** The fiat currency of a FIAT_BANK payout; null for a stablecoin payout. */
+function payoutCurrency(m: PayoutMethod): FiatCode | null {
+  return m.method === 'FIAT_BANK' ? m.currency : null;
+}
+
 /** A fiat leg in any currency other than the home currency makes the payment cross-border. */
 export function isCrossBorder(payIn: PayInMethod, payout: PayoutMethod, homeCurrency: FiatCode): boolean {
-  if (payIn.method === 'FIAT' && payIn.currency !== homeCurrency) return true;
-  return payout.method === 'FIAT_BANK' && payout.currency !== homeCurrency;
+  const i = payInCurrency(payIn);
+  const o = payoutCurrency(payout);
+  return (i !== null && i !== homeCurrency) || (o !== null && o !== homeCurrency);
 }
 
 /**
  * Whether a cross-border payment may be quoted. OFF: never. Testnet demo:
- * only on chain 5042002, only when the foreign leg is the payout (a foreign
- * fiat pay-in has no stub path) and only through a non-LIVE partner.
+ * only when both the config literal and the chain ID the settlement network
+ * adapter is pinned to are 5042002 (C-01), only when the foreign leg is the
+ * payout (a foreign fiat pay-in has no stub path) and only through a partner
+ * the composition root declares non-LIVE.
  */
-export function crossBorderAllowed(cfg: CrossBorderConfig, payIn: PayInMethod, payout: PayoutMethod, homeCurrency: FiatCode, partner: PartnerKind | null): boolean {
-  if (cfg.mode !== 'TESTNET_DEMO_STUB_ONLY' || cfg.chainId !== 5042002n) return false;
-  if (payIn.method === 'FIAT' && payIn.currency !== homeCurrency) return false;
-  return payout.method === 'FIAT_BANK' && partner !== null && partner !== 'LIVE';
+export function crossBorderAllowed(cfg: CrossBorderConfig, adapterChainId: bigint, payIn: PayInMethod, payout: PayoutMethod, homeCurrency: FiatCode, partner: PartnerKind | null): boolean {
+  if (cfg.mode !== 'TESTNET_DEMO_STUB_ONLY' || cfg.chainId !== ARC_TESTNET_CHAIN_ID || adapterChainId !== ARC_TESTNET_CHAIN_ID) return false;
+  const i = payInCurrency(payIn);
+  if (i !== null && i !== homeCurrency) return false;
+  return payoutCurrency(payout) !== null && partner !== null && partner !== 'LIVE';
 }
 
 /** Deterministic idempotency key of one port call of this request (`[a-z0-9:-]`, 70 characters). */
@@ -274,7 +346,7 @@ function dustText(d: DustRecord): string {
     case 'FX_REMAINDER':
       return `${d.source}:${fiatText(d.fiat)}:${d.suspense}`;
     case 'GAS_ALLOWANCE_SUBMINOR':
-      return `${d.source}:${d.wei.toString()}:${d.suspense}`;
+      return `${d.source}:${d.wei.toString()}:${d.posting}`;
     default:
       return `${d.source}:${d.usdcMinor.toString()}:${d.suspense}`;
   }
@@ -283,7 +355,7 @@ function dustText(d: DustRecord): string {
 /** The dust records a quote must carry, in order: FX remainder, gas sub-minor allowance, then the payout remainder (if any). */
 function dustRecords(convertIn: ConvertInLine | null, gasDustWei: NativeWei, payout: readonly DustRecord[]): readonly DustRecord[] {
   const fx: readonly DustRecord[] = convertIn !== null && convertIn.remainder.minor > 0n ? [{ source: 'FX_REMAINDER', fiat: convertIn.remainder, suspense: 'NOVA_FX_ENGINE_SUSPENSE' }] : [];
-  const gas: readonly DustRecord[] = gasDustWei > 0n ? [{ source: 'GAS_ALLOWANCE_SUBMINOR', wei: gasDustWei, suspense: 'GL-4 arc.gasDust' }] : [];
+  const gas: readonly DustRecord[] = gasDustWei > 0n ? [{ source: 'GAS_ALLOWANCE_SUBMINOR', wei: gasDustWei, posting: 'NON_POSTING' }] : [];
   return Object.freeze([...fx, ...gas, ...payout]);
 }
 
@@ -302,6 +374,7 @@ export function quoteFields(q: Omit<JourneyQuote, 'quoteId'>): readonly string[]
     moneyText(q.payer),
     moneyText(q.recipient),
     `${q.allInRate.numerator}/${q.allInRate.denominator}`,
+    [q.customerFee.platformMinor.toString(), q.customerFee.gasMinor.toString(), q.customerFee.totalMinor.toString()].join('|'),
     c === null ? '-' : [c.fxQuoteId, c.provider, `${c.rate.numerator}/${c.rate.denominator}`, fiatText(c.from), c.to.toString(), fiatText(c.remainder), c.expiresAtMs.toString()].join('|'),
     [a.network, a.asset, a.destination, a.amount.toString(), a.amountWei.toString(), a.gasAllowanceWei.toString(), a.gasChargeMinor.toString(), a.gasDustWei.toString()].join('|'),
     p === null ? '-' : [p.payoutQuoteId, p.partnerKind, `${p.rate.numerator}/${p.rate.denominator}`, p.source.toString(), fiatText(p.gross), fiatText(p.fee), fiatText(p.net), p.expiresAtMs.toString()].join('|'),
@@ -337,6 +410,9 @@ export function checkConservation(q: JourneyQuote, settlement: SettlementAsset):
   const gas = nativeWeiToCbsMinor(a.gasAllowanceWei, settlement.precision);
   const charged = a.gasChargeMinor !== 0n || a.gasDustWei !== 0n;
   if (charged && (gas.minor !== a.gasChargeMinor || gas.dustWei !== a.gasDustWei)) return 'gas charge is not the U1 split of the allowance';
+  const f = q.customerFee;
+  if (f.gasMinor !== a.gasChargeMinor) return 'customer fee does not carry the gas charge';
+  if (addCbsMinor(f.platformMinor, f.gasMinor) !== f.totalMinor) return 'customer fee is not platform plus gas';
 
   // USDC that enters the Arc leg: converted from fiat, or debited directly.
   let usdcIn: CbsMinor | null;
@@ -345,14 +421,17 @@ export function checkConservation(q: JourneyQuote, settlement: SettlementAsset):
   } else {
     const c = q.convertIn;
     if (q.payer.kind !== 'FIAT' || q.payer.fiat.currency !== c.from.currency || q.payer.fiat.minor !== c.from.minor) return 'payer debit is not the converted amount';
+    if (c.from.currency !== payInCurrency(q.payIn)) return 'payer debit is not in the pay-in currency';
     if ((c.from.minor - c.remainder.minor) * c.rate.numerator !== c.to * c.rate.denominator) return 'CONVERT_IN does not balance';
+    if (!remainderBelowOneUnit(c.rate, c.remainder.minor)) return 'FX remainder is worth one target minor unit or more';
     usdcIn = c.to;
   }
   if (usdcIn === null) return 'payer debit is not in the settlement asset';
 
-  // USDC out: Arc transfer + gas charged + payout remainder set aside.
-  let out = addCbsMinor(a.amount, a.gasChargeMinor);
-  for (const d of q.dust) if (d.source === 'PAYOUT_REMAINDER') out = addCbsMinor(out, d.usdcMinor);
+  // USDC out: Arc transfer (A) + customer fee (F) + payout remainder set aside.
+  const payoutDust = q.dust.filter((d) => d.source === 'PAYOUT_REMAINDER');
+  let out = addCbsMinor(a.amount, f.totalMinor);
+  for (const d of payoutDust) out = addCbsMinor(out, d.usdcMinor);
   if (out !== usdcIn) return 'USDC in does not equal USDC out';
 
   if (q.payoutLine === null) {
@@ -363,15 +442,14 @@ export function checkConservation(q: JourneyQuote, settlement: SettlementAsset):
     if (p.source * p.rate.numerator !== p.gross.minor * p.rate.denominator) return 'PAYOUT does not balance';
     if (p.gross.minor - p.fee.minor !== p.net.minor) return 'net is not gross minus fee';
     if (q.recipient.kind !== 'FIAT' || q.recipient.fiat.currency !== p.net.currency || q.recipient.fiat.minor !== p.net.minor) return 'receiver amount is not the payout net';
+    if (p.net.currency !== payoutCurrency(q.payout)) return 'receiver amount is not in the payout currency';
+    if (payoutDust.some((d) => !remainderBelowOneUnit(p.rate, d.usdcMinor))) return 'payout remainder is worth one target minor unit or more';
   }
   // Dust: each record matches its leg; nothing set aside twice, nothing dropped.
-  const payoutDust = q.dust.filter((d) => d.source === 'PAYOUT_REMAINDER');
   const expected = dustRecords(q.convertIn, a.gasDustWei, []).map(dustText).concat(payoutDust.map(dustText));
   if (q.dust.map(dustText).join(',') !== expected.join(',')) return 'dust records do not match the legs';
   if (payoutDust.length > 1 || payoutDust.some((d) => d.usdcMinor <= 0n || q.payoutLine === null)) return 'a payout remainder needs one positive record and a PAYOUT leg';
 
-  if (q.payIn.method === 'FIAT' && (q.payer.kind !== 'FIAT' || q.payer.fiat.currency !== q.payIn.currency)) return 'payer debit is not in the pay-in currency';
-  if (q.payout.method === 'FIAT_BANK' && (q.recipient.kind !== 'FIAT' || q.recipient.fiat.currency !== q.payout.currency)) return 'receiver amount is not in the payout currency';
   if (q.allInRate.numerator !== moneyMinor(q.recipient) || q.allInRate.denominator !== moneyMinor(q.payer)) return 'all-in rate is not receiver over payer';
   if (q.quoteId !== quoteDigest(q)) return 'quote id is not the digest of its fields';
   if (q.expiresAtMs <= q.createdAtMs) return 'quote expires before it is created';
@@ -397,7 +475,7 @@ function minBig(a: bigint, b: bigint | null): bigint {
 /** The payer's side as the composer needs it: FIAT always has its FxPort. */
 type PayInPlan = { readonly kind: 'FIAT'; readonly port: FxPort; readonly currency: FiatCode } | { readonly kind: 'STABLECOIN' };
 /** The receiver's side: FIAT_BANK always has its PayoutQuotePort. */
-type PayoutPlan = { readonly kind: 'FIAT'; readonly port: PayoutQuotePort; readonly currency: FiatCode } | { readonly kind: 'STABLECOIN' };
+type PayoutPlan = { readonly kind: 'FIAT'; readonly port: PayoutQuotePort; readonly partner: PartnerKind; readonly currency: FiatCode } | { readonly kind: 'STABLECOIN' };
 
 interface Plan {
   readonly payIn: PayInPlan;
@@ -424,6 +502,7 @@ function planRequest(req: JourneyQuoteRequest, cfg: QuoteConfig, deps: QuoteDeps
   const s = cfg.settlement;
   if (!REQUEST_ID.test(req.requestId)) return refuse('AMOUNT_INVALID', 'request id required');
   if (s.asset !== 'USDC') return refuse('ASSET_NOT_SUPPORTED', `${s.asset}: only USDC is implemented`);
+  if (deps.settlementNetwork.network !== s.network) throw new QuoteIntegrityError('the settlement network adapter is not the configured settlement network');
   if (cfg.ttlMs <= 0n) return refuse('RATE_LOCK_EXPIRED', 'quote TTL must be positive');
   const { payIn, payout } = req;
   if (payIn.method !== 'FIAT' && (payIn.asset !== s.asset || payIn.network !== s.network)) return refuse('ASSET_NOT_SUPPORTED', 'pay-in asset or network is not the settlement asset');
@@ -438,10 +517,11 @@ function planRequest(req: JourneyQuoteRequest, cfg: QuoteConfig, deps: QuoteDeps
   let outPlan: PayoutPlan = { kind: 'STABLECOIN' };
   if (payout.method === 'FIAT_BANK') {
     if (deps.payout === null) return refuse('METHOD_NOT_ENABLED', 'no PayoutQuotePort wired');
-    outPlan = { kind: 'FIAT', port: deps.payout, currency: payout.currency };
+    if (deps.payout.port.partnerKind !== deps.payout.kind) throw new QuoteIntegrityError('the payout port does not declare the partner kind the composition root wired');
+    outPlan = { kind: 'FIAT', port: deps.payout.port, partner: deps.payout.kind, currency: payout.currency };
   }
-  const partner = outPlan.kind === 'FIAT' ? outPlan.port.partnerKind : null;
-  if (isCrossBorder(payIn, payout, cfg.homeCurrency) && !crossBorderAllowed(cfg.crossBorder, payIn, payout, cfg.homeCurrency, partner)) {
+  const partner = outPlan.kind === 'FIAT' ? outPlan.partner : null;
+  if (isCrossBorder(payIn, payout, cfg.homeCurrency) && !crossBorderAllowed(cfg.crossBorder, deps.settlementNetwork.chainId, payIn, payout, cfg.homeCurrency, partner)) {
     return refuse('CROSS_BORDER_DISABLED', 'cross-border stays OFF until a legal opinion is recorded');
   }
   const exactSide = req.side === 'SEND_EXACT' ? inPlan : outPlan;
@@ -538,7 +618,7 @@ interface Composed {
 }
 
 /** SEND_EXACT: payer debit fixed; work forward. */
-async function composeSend(req: JourneyQuoteRequest, plan: Plan, s: SettlementAsset, gasChargeMinor: CbsMinor): Promise<Step<Composed>> {
+async function composeSend(req: JourneyQuoteRequest, plan: Plan, s: SettlementAsset, feeMinor: CbsMinor): Promise<Step<Composed>> {
   let convertIn: ConvertInLine | null = null;
   let usdcIn = plan.exactMinor;
   if (plan.payIn.kind === 'FIAT') {
@@ -547,28 +627,28 @@ async function composeSend(req: JourneyQuoteRequest, plan: Plan, s: SettlementAs
     convertIn = convertLine(fx.value, plan.payIn.currency);
     usdcIn = convertIn.to;
   }
-  if (usdcIn <= gasChargeMinor) return { kind: 'STOP', result: refuse('AMOUNT_TOO_SMALL', 'the amount does not cover the network fee') };
-  const afterGas = subtractCbsMinor(usdcIn, gasChargeMinor);
+  if (usdcIn <= feeMinor) return { kind: 'STOP', result: refuse('AMOUNT_TOO_SMALL', 'the amount does not cover the customer fee') };
+  const afterFee = subtractCbsMinor(usdcIn, feeMinor);
   if (plan.payout.kind === 'FIAT') {
-    const po = await payoutForSource(plan.payout.port, req.requestId, { source: s.ledgerCode, currency: plan.payout.currency }, afterGas, s.precision);
+    const po = await payoutForSource(plan.payout.port, req.requestId, { source: s.ledgerCode, currency: plan.payout.currency }, afterFee, s.precision);
     if (po.kind === 'STOP') return po;
     const pq = po.value.quote;
-    return { kind: 'VALUE', value: { payerMinor: plan.exactMinor, recipientMinor: pq.net, arcAmount: pq.source, convertIn, payoutLine: payoutLine(pq, plan.payout.port.partnerKind), payoutDust: po.value.dust } };
+    return { kind: 'VALUE', value: { payerMinor: plan.exactMinor, recipientMinor: pq.net, arcAmount: pq.source, convertIn, payoutLine: payoutLine(pq, plan.payout.partner), payoutDust: po.value.dust } };
   }
-  return { kind: 'VALUE', value: { payerMinor: plan.exactMinor, recipientMinor: afterGas, arcAmount: afterGas, convertIn, payoutLine: null, payoutDust: ZERO_MINOR } };
+  return { kind: 'VALUE', value: { payerMinor: plan.exactMinor, recipientMinor: afterFee, arcAmount: afterFee, convertIn, payoutLine: null, payoutDust: ZERO_MINOR } };
 }
 
 /** RECEIVE_EXACT: receiver amount fixed; work backward. */
-async function composeReceive(req: JourneyQuoteRequest, plan: Plan, s: SettlementAsset, gasChargeMinor: CbsMinor): Promise<Step<Composed>> {
+async function composeReceive(req: JourneyQuoteRequest, plan: Plan, s: SettlementAsset, feeMinor: CbsMinor): Promise<Step<Composed>> {
   let payout: PayoutLine | null = null;
   let arcAmount = plan.exactMinor;
   if (plan.payout.kind === 'FIAT') {
     const po = await quotePayout(plan.payout.port, quoteCallKey(req.requestId, 'payout-1'), { source: s.ledgerCode, currency: plan.payout.currency, side: 'NET_EXACT', amount: plan.exactMinor }, s.precision);
     if (po.kind === 'STOP') return po;
-    payout = payoutLine(po.value, plan.payout.port.partnerKind);
+    payout = payoutLine(po.value, plan.payout.partner);
     arcAmount = payout.source;
   }
-  const usdcNeeded = addCbsMinor(arcAmount, gasChargeMinor);
+  const usdcNeeded = addCbsMinor(arcAmount, feeMinor);
   let convertIn: ConvertInLine | null = null;
   let payerMinor = usdcNeeded;
   if (plan.payIn.kind === 'FIAT') {
@@ -603,8 +683,11 @@ export async function composeJourneyQuote(req: JourneyQuoteRequest, cfg: QuoteCo
   const charged = cfg.gasCharging === 'CHARGED_TO_PAYER';
   const gasChargeMinor = charged ? split.minor : ZERO_MINOR;
   const gasDustWei = charged ? split.dustWei : ZERO_WEI;
+  const customerFee: CustomerFee = { platformMinor: cfg.platformFeeMinor, gasMinor: gasChargeMinor, totalMinor: addCbsMinor(cfg.platformFeeMinor, gasChargeMinor) };
 
-  const step = req.side === 'SEND_EXACT' ? await composeSend(req, plan, s, gasChargeMinor) : await composeReceive(req, plan, s, gasChargeMinor);
+  let step: Step<Composed>;
+  if (req.side === 'SEND_EXACT') step = await composeSend(req, plan, s, customerFee.totalMinor);
+  else step = await composeReceive(req, plan, s, customerFee.totalMinor);
   if (step.kind === 'STOP') return step.result;
   const { convertIn, payoutLine: payout, arcAmount, payoutDust } = step.value;
 
@@ -627,6 +710,7 @@ export async function composeJourneyQuote(req: JourneyQuoteRequest, cfg: QuoteCo
     payer,
     recipient,
     allInRate: { numerator: moneyMinor(recipient), denominator: moneyMinor(payer) },
+    customerFee,
     convertIn,
     arcTransfer: {
       leg: 'ARC_TRANSFER',

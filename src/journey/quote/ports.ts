@@ -20,6 +20,12 @@
  *
  * Every rate is a ratio of positive bigints (never a float [A-51]). Every
  * answer is checked here before the composer relies on it (fail closed).
+ * A remainder is accepted only when it is WORTH less than one minor unit of
+ * the target asset at the quoted rate (`remainderBelowOneUnit`: remainder x
+ * numerator < denominator), the true sub-unit residue. Anything worth more is
+ * value the port withheld, never dust (CLAUDE.md "Sub-unit dust"; verifier
+ * JQUOTE-R1 B1, R2 B1). A port whose lot size would leave more reports its
+ * effective rate (to/from) with remainder 0 instead.
  * Money path: no `number` anywhere (MC-01).
  */
 import { checkQuote } from '../../nova-ports/conversion.js';
@@ -28,6 +34,21 @@ import { ok, rejected } from '../../nova-ports/ids.js';
 import type { FiatCode, IdempotencyKey, LedgerAssetCode, PortResult } from '../../nova-ports/ids.js';
 import { subtractCbsMinor } from '../../amounts/index.js';
 import type { CbsMinor, CbsPrecision } from '../../amounts/index.js';
+
+/**
+ * True when `remainder` (from-asset minor units a quote did not convert) is
+ * worth less than ONE target minor unit at `rate` (target per from-asset):
+ * remainder x numerator < denominator. This bounds the remainder by its
+ * VALUE, not by the rate's step, so a port cannot hide payer value as "dust"
+ * by choosing a finer rate representation (verifier JQUOTE-R2 B1). An honest
+ * port that cannot meet it reports its effective rate (to/from) with remainder
+ * 0. False for a rate that is not a ratio of positive integers (fail closed).
+ */
+export function remainderBelowOneUnit(rate: RatioQuote, remainder: bigint): boolean {
+  // A denominator <= 0 needs no guard: remainder (>= 0) x numerator (> 0) is never below it.
+  if (rate.numerator <= 0n) return false;
+  return remainder * rate.numerator < rate.denominator;
+}
 
 /** Wall clock in epoch milliseconds, as a bigint (MC-01). Injected; tests drive it. */
 export interface Clock {
@@ -81,6 +102,7 @@ export function checkFxLock(req: QuoteRequest, lock: FxLock, usdcPrecision: CbsP
   if (why !== null) return why;
   if (lock.quote.to.precision !== usdcPrecision) return 'quote is at another USDC precision';
   if (req.side === 'TO_EXACT' && lock.quote.remainder !== 0n) return 'a TO_EXACT quote must leave no remainder';
+  if (!remainderBelowOneUnit(lock.quote.rate, lock.quote.remainder)) return 'remainder is worth one target minor unit or more';
   return null;
 }
 
@@ -112,6 +134,8 @@ export interface PayoutQuoteRequest {
  */
 export interface PayoutQuote {
   readonly payoutQuoteId: string;
+  /** The ledger asset code the partner priced (must be the requested USDC code [A-03]). */
+  readonly sourceAsset: LedgerAssetCode;
   readonly currency: FiatCode;
   readonly source: CbsMinor;
   readonly sourcePrecision: CbsPrecision;
@@ -128,7 +152,9 @@ export interface PayoutQuote {
 /**
  * Who answers: `LIVE` a real partner under agreement (none exists yet);
  * `STUB` the CPN-shaped stub adapter; `TEST_FAKE` an in-memory fake. Only a
- * non-LIVE source can serve the testnet cross-border demo.
+ * non-LIVE source can serve the testnet cross-border demo. The composition
+ * root declares the kind it wired (`WiredPayoutPartner.kind`, compose.ts);
+ * the port's own `partnerKind` is only a cross-check that must agree.
  */
 export type PartnerKind = 'LIVE' | 'STUB' | 'TEST_FAKE';
 
@@ -143,12 +169,14 @@ export interface PayoutQuotePort {
 /** Null when `q` answers `req` exactly, with integer arithmetic only; otherwise why not. */
 export function checkPayoutQuote(req: PayoutQuoteRequest, q: PayoutQuote, usdcPrecision: CbsPrecision): string | null {
   if (q.rate.numerator <= 0n || q.rate.denominator <= 0n) return 'rate must be a ratio of positive integers';
+  if (q.sourceAsset !== req.source) return 'quote prices another source asset';
   if (q.currency !== req.currency) return 'quote is for another currency';
   if (q.sourcePrecision !== usdcPrecision) return 'quote is at another USDC precision';
   const exact = req.side === 'SOURCE_EXACT' ? q.source : q.net;
   if (exact !== req.amount) return `quote does not keep the ${req.side === 'SOURCE_EXACT' ? 'source' : 'net'} amount exact`;
   if (req.side === 'NET_EXACT' && q.remainder !== 0n) return 'a NET_EXACT quote must leave no remainder';
   if (q.remainder > q.source) return 'remainder exceeds the source amount';
+  if (!remainderBelowOneUnit(q.rate, q.remainder)) return 'remainder is worth one target minor unit or more';
   if (subtractCbsMinor(q.source, q.remainder) * q.rate.numerator !== q.gross * q.rate.denominator) return 'conversion does not balance to the minor unit';
   if (q.fee > q.gross) return 'fee exceeds the gross amount';
   if (subtractCbsMinor(q.gross, q.fee) !== q.net) return 'net is not gross minus fee';

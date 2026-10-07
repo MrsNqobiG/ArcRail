@@ -26,6 +26,7 @@ import { ArcIndexer, lowest } from '../../src/indexer/indexer.js';
 import type { LogFilter, RawLog, RawReceipt, RpcOutcome, RpcSource } from '../../src/indexer/rpc.js';
 import type { IndexerStore } from '../../src/indexer/store.js';
 import type { NetworkFailure } from '../../src/network/types.js';
+import { pollAddresses } from '../../src/network/types.js';
 import { loadArcNetworkParams } from '../../src/network/arc/config.js';
 import type { ArcNetworkParams } from '../../src/network/arc/params.js';
 import type { ConfirmedTransfer, NetworkAddress } from '../../src/network/types.js';
@@ -37,6 +38,7 @@ const base = loadArcNetworkParams({
   stallAfterMs: 30_000n,
   startBlock: 1n,
   blocklistMaxAgeMs: 60_000n,
+  headRegressionToleranceBlocks: 5n,
 });
 
 const A = fakeAddress('ours-a');
@@ -429,6 +431,39 @@ describe('ArcIndexer construction', () => {
     const bad = (over: Record<string, unknown>) => () => new ArcIndexer({ params: { ...base, ...over } as ArcNetworkParams, sources: [c, c], store, timing });
     expect(bad({ chainId: 1n })).toThrow('the Arc indexer runs on Arc testnet only');
     expect(bad({ dfnsNetwork: 'Arc' })).toThrow('the Arc indexer runs on Arc testnet only');
+  });
+});
+
+describe('pollAddresses (lensR-1 m6)', () => {
+  it('lower-cases and dedupes; the first malformed address → INVALID_ADDRESS', () => {
+    const upper = `0x${A.slice(2).toUpperCase()}` as NetworkAddress;
+    expect(pollAddresses(new Set([upper, A, B]))).toEqual([A, B]);
+    expect(pollAddresses(new Set<NetworkAddress>())).toEqual([]);
+    expect(pollAddresses(new Set([A, '0x12' as NetworkAddress, 'nope' as NetworkAddress]))).toEqual({ kind: 'INVALID_ADDRESS', address: '0x12' });
+  });
+
+  it('ArcIndexer.poll refuses before reading any source and records no halt', async () => {
+    const s = setup();
+    let calls = 0n;
+    const counting: RpcSource = {
+      name: 'counting',
+      head: async () => {
+        calls += 1n;
+        return s.chainA.head();
+      },
+      getLogs: async (f) => {
+        calls += 1n;
+        return s.chainA.getLogs(f);
+      },
+      getReceipt: async (h) => {
+        calls += 1n;
+        return s.chainA.getReceipt(h);
+      },
+    };
+    const ix = new ArcIndexer({ params: s.params, sources: [counting, s.chainB], store: new MapIndexerStore(), timing: new ManualTiming() });
+    expect(await ix.poll(new Set([A, '0xabc' as NetworkAddress]))).toEqual({ kind: 'FAILED', failure: { kind: 'INVALID_ADDRESS', address: '0xabc' } });
+    expect(calls).toBe(0n);
+    expect(await ix.halt()).toBeNull();
   });
 });
 
@@ -956,20 +991,65 @@ describe('ArcIndexer.poll', () => {
         kind: 'FAILED',
         failure: { kind: 'RPC_DISAGREEMENT', detail: `sources disagree on the receipt of ${t.hash}` },
       });
-      expect(await withReceipt(s, () => null, true).poll(OURS)).toEqual({
-        kind: 'FAILED',
-        failure: { kind: 'RPC_DISAGREEMENT', detail: `sources disagree on the receipt of ${t.hash}` },
-      });
     });
 
-    it('a log with no receipt anywhere → RPC_DISAGREEMENT', async () => {
+    it('a receipt missing from one source after every retry → SOURCE_LAGGING, not sticky; nothing delivered, no cursor move (lensR-1 m1)', async () => {
       const s = setup();
       const t = nativeTransferTx(s.params, 'r', X, A, 1n);
       s.mine([t]);
-      expect(await withReceipt(s, () => null).poll(OURS)).toEqual({
+      const timing = new ManualTiming();
+      const store = new MapIndexerStore();
+      let missing = true;
+      const lb: RpcSource = {
+        name: 'reference',
+        head: () => s.chainB.head(),
+        getLogs: (f) => s.chainB.getLogs(f),
+        getReceipt: async (h) => (missing ? { ok: true, value: null } : s.chainB.getReceipt(h)),
+      };
+      const ix = new ArcIndexer({ params: s.params, sources: [s.chainA, lb], store, timing });
+      expect(await ix.poll(OURS)).toEqual({
         kind: 'FAILED',
-        failure: { kind: 'RPC_DISAGREEMENT', detail: `log ${t.hash}:0 has no receipt` },
+        failure: { kind: 'SOURCE_LAGGING', source: 'reference', detail: `receipt of ${t.hash} still missing after 8 attempts` },
       });
+      expect(timing.slept).toEqual([125n, 250n, 500n, 1000n, 2000n, 4000n, 4000n]);
+      expect(await ix.halt()).toBeNull();
+      expect(await store.loadCursor(ix.cursorKeyOf(A))).toBeNull();
+      expect(await ix.pending()).toEqual([]);
+      missing = false;
+      expect((ok(await ix.poll(OURS)) as readonly ConfirmedTransfer[]).map((x) => x.txHash)).toEqual([t.hash]);
+    });
+
+    it('a receipt missing on the first read and present on a retry is delivered (load-balanced backend, C-42)', async () => {
+      const s = setup();
+      const t = nativeTransferTx(s.params, 'r', X, A, 1n);
+      s.mine([t]);
+      const timing = new ManualTiming();
+      let reads = 0n;
+      const lb: RpcSource = {
+        name: 'reference',
+        head: () => s.chainB.head(),
+        getLogs: (f) => s.chainB.getLogs(f),
+        getReceipt: async (h) => {
+          reads += 1n;
+          return reads === 1n ? { ok: true, value: null } : s.chainB.getReceipt(h);
+        },
+      };
+      const ix = new ArcIndexer({ params: s.params, sources: [s.chainA, lb], store: new MapIndexerStore(), timing });
+      expect((ok(await ix.poll(OURS)) as readonly ConfirmedTransfer[]).map((x) => x.txHash)).toEqual([t.hash]);
+      expect(timing.slept).toHaveLength(1);
+      expect(reads).toBe(2n);
+    });
+
+    it('a log with no receipt on any source → SOURCE_LAGGING naming every source, not sticky', async () => {
+      const s = setup();
+      const t = nativeTransferTx(s.params, 'r', X, A, 1n);
+      s.mine([t]);
+      const ix = withReceipt(s, () => null);
+      expect(await ix.poll(OURS)).toEqual({
+        kind: 'FAILED',
+        failure: { kind: 'SOURCE_LAGGING', source: 'own-node,reference', detail: `receipt of ${t.hash} still missing after 8 attempts` },
+      });
+      expect(await ix.halt()).toBeNull();
     });
 
     it('a receipt in another block than its log → RPC_DISAGREEMENT', async () => {

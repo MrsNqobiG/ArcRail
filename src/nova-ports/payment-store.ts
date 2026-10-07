@@ -54,8 +54,8 @@
  *   DFNS_FAILED / BLOCKLISTED_PRE_MEMPOOL, DFNS_CANCEL_ISSUED for
  *   CANCELLED_ONCHAIN_REPLACED. A LINK_HASH decision names the hash it links
  *   (`txHash`), and only that hash is linked. Approver ids are canonical staff
- *   ids: no whitespace, and two ids equal after NFKC and lower-casing are the
- *   same person;
+ *   ids (ASCII letters, digits and . _ @ - only), and two ids equal after NFKC
+ *   and upper-casing are the same person;
  * - unpause consumes a recorded UNPAUSE decision whose subject is the incident
  *   id of the pause it lifts (`RailState.incident`);
  * - a submit marker's externalId belongs to one payment only (MARKER_CONFLICT);
@@ -577,12 +577,16 @@ function unqueued(outbox: readonly OutboxItem[], enqueued: (key: IdempotencyKey)
 /**
  * §9.2 P6, §9.3, F-17 for a P6 in applySignal's outbox: null when it may go
  * with this applied change. The change must leave the payment FAILED, must not
- * be a PAYOUT failure (the USDC is at the partner: closeFailedPayout), and the
+ * be a PAYOUT failure after the Arc leg COMPLETED (the USDC is at the partner:
+ * closeFailedPayout), and the
  * RESERVE leg ahead of the failing leg must be COMPLETED (P1 posted).
  */
 function releaseRule(rec: PaymentRecord, t: LegTransition, after: PaymentRecord): string | null {
   if (after.status !== 'FAILED') return `the payment is ${after.status} after this signal; a release goes only with the change that fails it`;
-  if (t.leg === 'PAYOUT') return 'a failed payout leaves the USDC at the partner (F-17); release only through closeFailedPayout with P11 or P2R';
+  // With the Arc leg COMPLETED the USDC is at the partner (P2P posted): F-17. Before that nothing left, and P6 releases P1 as for any leg.
+  if (t.leg === 'PAYOUT' && rec.legs.some((l) => l.kind === 'ARC_TRANSFER' && l.stage === 'COMPLETED')) {
+    return 'a failed payout leaves the USDC at the partner (F-17); release only through closeFailedPayout with P11 or P2R';
+  }
   const reserved = legsAhead(rec.legs, t.leg).some((l) => l.kind === 'RESERVE' && l.stage === 'COMPLETED');
   return reserved ? null : `no P1 reservation to release: the RESERVE leg ahead of ${t.leg} is not COMPLETED (§9.3 P1 = P6)`;
 }
@@ -782,17 +786,21 @@ export function decideCompensation(rec: PaymentRecord, expectedVersion: bigint, 
   return { kind: 'APPLY', record: derive({ ...rec, compensatedBy: p7.journalId, version: rec.version + 1n }) };
 }
 
-/** A canonical staff id from Nova's staff authentication [A-35]: non-empty, no whitespace anywhere. */
-const APPROVER_RE = /^\S+$/;
+/** A canonical staff id from Nova's staff authentication [A-35]: ASCII letters, digits and . _ @ - only (no whitespace, no zero-width or other invisible characters). */
+const APPROVER_RE = /^[A-Za-z0-9._@-]+$/;
 
-/** The form two approver ids are compared in: NFKC, then lower case ('ANN' and 'ann' are one person). */
+/**
+ * The form two approver ids are compared in: NFKC, then upper case, which folds
+ * more than lower case does ('ann' and 'ANN' are one person, and so are 'ß' and
+ * 'ss'). Folding too much only ever refuses a pair (fail closed).
+ */
 export function canonicalApprover(id: string): string {
-  return id.normalize('NFKC').toLowerCase();
+  return id.normalize('NFKC').toUpperCase();
 }
 
 function checkApprovers(d: OperatorDecision): PortResult<never, 'APPROVER_UNAUTHENTICATED' | 'SAME_APPROVER'> | null {
   if (!APPROVER_RE.test(d.approvers[0]) || !APPROVER_RE.test(d.approvers[1])) {
-    return rejected('APPROVER_UNAUTHENTICATED', 'both approvers must be authenticated staff identities (canonical ids, no whitespace)');
+    return rejected('APPROVER_UNAUTHENTICATED', 'both approvers must be authenticated staff identities (canonical ids: ASCII letters, digits and . _ @ -)');
   }
   if (canonicalApprover(d.approvers[0]) === canonicalApprover(d.approvers[1])) return rejected('SAME_APPROVER', 'a decision needs two distinct approvers');
   return null;
@@ -948,9 +956,12 @@ function closeByClaim(rec: PaymentRecord, evidence: InboundSignal, d: OperatorDe
 }
 
 /** F-17 first branch: the Arc log of the partner's exact return, claimed by this payment's case. */
-function closeByReturn(evidence: InboundSignal, c: CaseRecord): string | null {
+function closeByReturn(rec: PaymentRecord, evidence: InboundSignal, c: CaseRecord): string | null {
   if (evidence.source !== 'ARC_LOG') return 'P2R needs the Arc log of the partner\'s return as evidence';
-  return c.state === 'MATCHED' && c.matchedLog === evidence.dedupeKey ? null : `case ${c.caseId} has not claimed ${evidence.dedupeKey} (claimInbound)`;
+  // §9.2 P2R, §12 F-17: only a return of exactly value = cbsMinorToNativeWei(A, p) matches; the amount is the server-side binding's, never the case's say-so.
+  if (c.expected?.value !== rec.binding.amount) return `case ${c.caseId} expects a return of ${String(c.expected?.value)}, not this payment's ${rec.binding.amount}; a return of any other value goes to P9`;
+  // matchedLog is set only by a claim, which also makes the case MATCHED.
+  return c.matchedLog === evidence.dedupeKey ? null : `case ${c.caseId} has not claimed ${evidence.dedupeKey} (claimInbound)`;
 }
 
 /**
@@ -973,20 +984,29 @@ export function decideClosePayout(
 ): CloseVerdict {
   const refuse = (code: SignalRejectCode, detail: string): CloseVerdict => ({ kind: 'DONE', result: rejected(code, detail) });
   const payout = rec.legs.find((l) => l.kind === 'PAYOUT');
-  if (payout?.reason !== 'PAYOUT_FAILED') return refuse('ILLEGAL_TRANSITION', 'closeFailedPayout is only for a FIAT_BANK payment whose PAYOUT leg is REJECTED/PAYOUT_FAILED (F-17)');
-  if (enqueued(releaseKey(rec.paymentId)) !== null) {
+  const arcDone = rec.legs.some((l) => l.kind === 'ARC_TRANSFER' && l.stage === 'COMPLETED');
+  if (payout === undefined || !isFailureStage(payout.stage) || !arcDone) {
+    return refuse('ILLEGAL_TRANSITION', 'closeFailedPayout is only for a FIAT_BANK payment whose PAYOUT leg failed after the Arc leg COMPLETED, with the USDC at the partner (F-17)');
+  }
+  const keys: readonly string[] = outbox.map((o) => o.key);
+  // §9.2 P2R, §12 F-17: after the P11 branch a later exact return is P2R alone (credits partnerClaim, no second P6).
+  const late = enqueued(partnerClaimKey(rec.paymentId)) !== null && enqueued(partnerReturnKey(rec.paymentId)) === null && keys.length === 1 && keys[0] === partnerReturnKey(rec.paymentId);
+  if (enqueued(releaseKey(rec.paymentId)) !== null && !late) {
     const why = unqueued(outbox, enqueued);
     return why === null ? { kind: 'DONE', result: ok({ outcome: 'DUPLICATE' as const, record: rec }, true) } : refuse('ILLEGAL_TRANSITION', `the payment is already released; ${why}`);
   }
   if (rec.version !== expectedVersion) return refuse('VERSION_CONFLICT', `at version ${rec.version}`);
   if (seen === null || seen.digest !== evidence.payloadDigest) return refuse('SIGNAL_CONFLICT', `evidence ${evidence.dedupeKey} is not the recorded signal under that key`);
-  const keys: readonly string[] = outbox.map((o) => o.key);
   const claim = keys.includes(partnerClaimKey(rec.paymentId));
+  if (late) {
+    const lateWhy = partnerCase === null ? 'no PARTNER_RETURN case' : closeByReturn(rec, evidence, partnerCase);
+    return lateWhy === null ? { kind: 'APPLY', record: derive({ ...rec, version: rec.version + 1n }) } : refuse('ILLEGAL_TRANSITION', lateWhy);
+  }
   if (!keys.includes(releaseKey(rec.paymentId)) || claim === keys.includes(partnerReturnKey(rec.paymentId))) {
     return refuse('ILLEGAL_TRANSITION', 'a failed payout closes with P6 and exactly one of P11 or P2R (F-17)');
   }
   if (partnerCase === null) return refuse('ILLEGAL_TRANSITION', `no PARTNER_RETURN case for ${rec.paymentId} (putCase on an OPEN_PARTNER_CASE decision first)`);
-  const why = claim ? closeByClaim(rec, evidence, decision, partnerCase) : closeByReturn(evidence, partnerCase);
+  const why = claim ? closeByClaim(rec, evidence, decision, partnerCase) : closeByReturn(rec, evidence, partnerCase);
   if (why !== null) return refuse('ILLEGAL_TRANSITION', why);
   return { kind: 'APPLY', record: derive({ ...rec, version: rec.version + 1n }) };
 }

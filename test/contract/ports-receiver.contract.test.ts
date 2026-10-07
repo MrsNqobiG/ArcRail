@@ -90,7 +90,7 @@ describe.each(FACTORIES)('ReceiverPort contract: %s', (_name, make) => {
     r.set(ben, { ...walletPref, choice: { ...walletPref.choice!, destination: { kind: 'ADDRESS', network: 'FAKENET', address: ADDR } } });
     expect(await r.resolvePayout(ben)).toMatchObject({ kind: 'REJECTED', code: 'PREFERENCE_INVALID' });
     r.set(ben2, walletPref);
-    expect(await r.resolvePayout(ben2)).toMatchObject({ kind: 'REJECTED', code: 'PREFERENCE_INVALID', detail: /another beneficiary/ });
+    expect(await r.resolvePayout(ben2)).toMatchObject({ kind: 'REJECTED', code: 'PREFERENCE_INVALID', detail: expect.stringMatching(/another beneficiary/) });
   });
 
   it('AMBIGUOUS can be injected before a read; the next read answers', async () => {

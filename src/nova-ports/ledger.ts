@@ -280,6 +280,13 @@ export function evaluateJournal(req: JournalRequest, view: LedgerView): PortResu
     const mirrors = original.asset === req.asset && original.refs.paymentId === req.refs.paymentId && legsKey(mirrorLegs(original.legs)) === legsKey(req.legs);
     if (!mirrors) return rejected('BINDING_MISMATCH', 'P7 legs must mirror the original journal');
   }
+  if (req.template === 'P1_RESERVE' && view.paymentJournals(req.refs.paymentId as PaymentId).some((j) => j.template === 'P1_RESERVE')) {
+    return rejected('BINDING_MISMATCH', 'a payment has exactly one P1 reservation (§9.3 P1 = P6, §10.2 one P1 key)');
+  }
+  if (req.template === 'P11_PARTNER_CLAIM' || req.template === 'P2R_PARTNER_RETURN') {
+    const why = partnerReturnRule(req, view.paymentJournals(req.refs.paymentId as PaymentId));
+    if (why !== null) return rejected('BINDING_MISMATCH', why);
+  }
   if (req.template === 'P6_RELEASE') {
     const why = releaseRule(req, view.paymentJournals(req.refs.paymentId as PaymentId));
     if (why !== null) return rejected('BINDING_MISMATCH', why);
@@ -303,6 +310,18 @@ function releaseRule(req: JournalRequest, journals: readonly JournalRequest[]): 
   if (posted('P2P_PARTNER_FUNDED') && !posted('P2R_PARTNER_RETURN') && !posted('P11_PARTNER_CLAIM')) {
     return 'F-17: the USDC is at the payout partner; P6 follows P2R or comes after P11';
   }
+  return null;
+}
+
+/**
+ * §9.2 P11, P2R: both move exactly the payment's P2P amount A (every leg is A),
+ * so the partner's balance and the claim are never left at A - x. Null when it holds.
+ */
+function partnerReturnRule(req: JournalRequest, journals: readonly JournalRequest[]): string | null {
+  const p2p = journals.find((j) => j.template === 'P2P_PARTNER_FUNDED');
+  if (p2p === undefined) return `${req.template} needs this payment's P2P (the USDC at the partner)`;
+  const a = p2p.legs.reduce((m, l) => (l.amount > m ? l.amount : m), ZERO); // a P2P has two legs of A
+  if (req.asset !== p2p.asset || req.legs.some((l) => l.amount !== a)) return `${req.template} must move exactly the payment's P2P amount ${String(a)} (§9.2 P11, P2R)`;
   return null;
 }
 

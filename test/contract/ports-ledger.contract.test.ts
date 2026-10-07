@@ -3,6 +3,7 @@
  * Runs unchanged against both in-memory fakes; Nova's adapter must pass it too
  * [A-34]: add a factory to FACTORIES.
  */
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { CBS_MINOR_MAX, cbsMinor, cbsPrecision } from '../../src/amounts/index.js';
 import type { CbsMinor } from '../../src/amounts/index.js';
@@ -10,7 +11,7 @@ import { FaultPlan } from '../../src/nova-ports/fakes/faults.js';
 import { EventLogLedger, MapLedger } from '../../src/nova-ports/fakes/ledger-fakes.js';
 import type { LedgerFakeConfig } from '../../src/nova-ports/fakes/ledger-fakes.js';
 import { idempotencyKey, ledgerAssetCode, novaAccountRef, paymentId } from '../../src/nova-ports/ids.js';
-import type { PortResult } from '../../src/nova-ports/ids.js';
+import type { PaymentId, PortResult } from '../../src/nova-ports/ids.js';
 import type { JournalReceipt, JournalRequest, LedgerAccount, LedgerLeg, LedgerPort, PostingTemplateId } from '../../src/nova-ports/ledger.js';
 
 type Factory = (faults?: FaultPlan, cfg?: Partial<LedgerFakeConfig>) => LedgerPort;
@@ -56,6 +57,9 @@ const pid2 = paymentId('pay-' + 'bb'.repeat(16));
 const leg = (account: LedgerAccount, side: LedgerLeg['side'], amount: bigint): LedgerLeg => ({ account, side, amount: cbsMinor(amount) });
 const refs = { paymentId: pid, network: 'ARC', txHash: null, logIndex: null, dfnsTransferId: null, compensates: null } as const;
 
+/** The payment of a P1 key: `pay:a:p1` is `pid`; any other key is its own payment (a payment has exactly one P1). */
+const pidOfKey = (key: string): PaymentId => (key === 'pay:a:p1' ? pid : paymentId('pay-' + createHash('sha256').update(key).digest('hex').slice(0, 32)));
+
 /** P1_RESERVE: DR GL-1 payer, CR GL-5 arc.outbound, A + F (§9.2). */
 const p1 = (amount: bigint, key = 'pay:a:p1', account: LedgerAccount = payer): JournalRequest => ({
   key: idempotencyKey(key),
@@ -63,7 +67,7 @@ const p1 = (amount: bigint, key = 'pay:a:p1', account: LedgerAccount = payer): J
   asset: USDC,
   precision: p6,
   legs: [leg(account, 'DEBIT', amount), leg(clearing, 'CREDIT', amount)],
-  refs,
+  refs: { ...refs, paymentId: pidOfKey(key) },
 });
 /** P2 + P3 as one shape check: DR GL-5, CR GL-2 hot (A) and GL-6 fees (F). */
 const settle = (a: bigint, f: bigint, key = 'pay:a:p2'): JournalRequest => ({
@@ -324,7 +328,7 @@ describe.each(FACTORIES)('LedgerPort contract: %s', (_name, make) => {
     ] as const) {
       okValue(await l.postJournal(rail(t, dr, cr)));
       const withPayment = { ...rail(t, dr, cr), key: idempotencyKey(`railp:${t.toLowerCase().replace(/_/g, '-')}`), refs: { ...refs } };
-      expect(await l.postJournal(withPayment)).toMatchObject({ kind: 'REJECTED', code: 'INVALID_JOURNAL', detail: /paymentId must be null for P5\/P8\/P9\/P10/ });
+      expect(await l.postJournal(withPayment)).toMatchObject({ kind: 'REJECTED', code: 'INVALID_JOURNAL', detail: expect.stringMatching(/paymentId must be null for P5\/P8\/P9\/P10/) });
     }
     for (const t of ['P1_RESERVE', 'P2_SETTLE_EXTERNAL', 'P2P_PARTNER_FUNDED', 'P2R_PARTNER_RETURN', 'P3_FEE', 'P6_RELEASE', 'P11_PARTNER_CLAIM'] as const) {
       expect(await l.postJournal({ ...rail(t, hot, clearing), key: idempotencyKey(`nop:${t.toLowerCase().replace(/_/g, '-')}`) })).toMatchObject({ kind: 'REJECTED', code: 'INVALID_JOURNAL' });
@@ -333,12 +337,53 @@ describe.each(FACTORIES)('LedgerPort contract: %s', (_name, make) => {
 
   it('F-17 templates: P2P funds the partner, P2R returns it, P11 turns it into a claim', async () => {
     const l = make();
-    const j = (template: PostingTemplateId, dr: LedgerAccount, cr: LedgerAccount, key: string): JournalRequest => ({ ...p1(40n, key), template, legs: [leg(dr, 'DEBIT', 40n), leg(cr, 'CREDIT', 40n)] });
+    const j = (template: PostingTemplateId, dr: LedgerAccount, cr: LedgerAccount, key: string): JournalRequest => ({ ...p1(40n, key), refs, template, legs: [leg(dr, 'DEBIT', 40n), leg(cr, 'CREDIT', 40n)] });
     okValue(await l.postJournal(j('P2P_PARTNER_FUNDED', partner, hot, 'pay:a:p2p')));
     okValue(await l.postJournal(j('P11_PARTNER_CLAIM', partnerClaim, partner, 'pay:a:p11')));
     okValue(await l.postJournal(j('P2R_PARTNER_RETURN', hot, partnerClaim, 'pay:a:p2r')));
     expect(await bal(l, partner)).toEqual({ debits: 40n, credits: 40n });
     expect(await bal(l, partnerClaim)).toEqual({ debits: 40n, credits: 40n });
+  });
+
+  it('m2: a payment has exactly one P1 (a second under another key is refused, nothing posts); a non-P1 first journal is no reservation to release', async () => {
+    const l = make();
+    okValue(await l.postJournal(p1(300n)));
+    expect(await l.postJournal({ ...p1(200n, 'pay:a:p1-again'), refs })).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail: expect.stringMatching(/exactly one P1/) });
+    expect(await bal(l, payer)).toEqual({ debits: 300n, credits: OPENING });
+    expect(await l.getJournalByKey(idempotencyKey('pay:a:p1-again'))).toEqual({ kind: 'OK', value: null, replayed: false });
+    // The replay of the one P1 is still a replay.
+    okValue(await l.postJournal(p1(300n)), true);
+    // M29: the P6 binds to the payment's P1, not to whatever journal came first.
+    const m = make();
+    const gas: JournalRequest = { ...p1(5n, 'pay:a:gas'), template: 'P4_GAS', refs };
+    okValue(await m.postJournal(gas));
+    const mirror = (a: bigint, key: string): JournalRequest => ({ ...p1(a, key), template: 'P6_RELEASE', refs, legs: [leg(clearing, 'DEBIT', a), leg(payer, 'CREDIT', a)] });
+    expect(await m.postJournal(mirror(5n, 'pay:a:p6'))).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail: expect.stringMatching(/mirror this payment's P1/) });
+    // Only a P1 counts as the reservation: a gas journal before it does not block the P1, and the P6 then binds to the P1.
+    okValue(await m.postJournal(p1(5n)));
+    okValue(await m.postJournal(mirror(5n, 'pay:a:p6')));
+  });
+
+  it('m3: P11 and P2R need the payment\'s P2P and move exactly its amount', async () => {
+    const l = make();
+    const j = (template: PostingTemplateId, dr: LedgerAccount, cr: LedgerAccount, key: string, a = 40n): JournalRequest => ({ ...p1(a, key), refs, template, legs: [leg(dr, 'DEBIT', a), leg(cr, 'CREDIT', a)] });
+    expect(await l.postJournal(j('P11_PARTNER_CLAIM', partnerClaim, partner, 'pay:a:p11'))).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail: expect.stringMatching(/needs this payment's P2P/) });
+    expect(await l.postJournal(j('P2R_PARTNER_RETURN', hot, partner, 'pay:a:p2r'))).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail: expect.stringMatching(/needs this payment's P2P/) });
+    // A P1 of the same amount is no P2P.
+    okValue(await l.postJournal(p1(40n)));
+    expect(await l.postJournal(j('P11_PARTNER_CLAIM', partnerClaim, partner, 'pay:a:p11'))).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail: expect.stringMatching(/needs this payment's P2P/) });
+    okValue(await l.postJournal(j('P2P_PARTNER_FUNDED', partner, hot, 'pay:a:p2p')));
+    // One leg off A is refused even when the journal balances.
+    const split: JournalRequest = { ...j('P11_PARTNER_CLAIM', partnerClaim, partner, 'pay:a:p11'), legs: [leg(partnerClaim, 'DEBIT', 40n), leg(partner, 'CREDIT', 39n), leg(hot, 'CREDIT', 1n)] };
+    expect(await l.postJournal(split)).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail: expect.stringMatching(/exactly the payment's P2P amount 40/) });
+    for (const a of [1n, 39n, 41n]) {
+      expect(await l.postJournal(j('P11_PARTNER_CLAIM', partnerClaim, partner, 'pay:a:p11', a))).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail: expect.stringMatching(/exactly the payment's P2P amount 40/) });
+      expect(await l.postJournal(j('P2R_PARTNER_RETURN', hot, partner, 'pay:a:p2r', a))).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH' });
+    }
+    expect(await l.postJournal({ ...j('P11_PARTNER_CLAIM', partnerClaim, partner, 'pay:a:p11'), asset: ZAR, precision: cbsPrecision(2) })).toMatchObject({ kind: 'REJECTED' });
+    // A P11 of 1 therefore never unlocks the P6 (F-17 gate).
+    expect(await bal(l, partner)).toEqual({ debits: 40n, credits: 0n });
+    okValue(await l.postJournal(j('P11_PARTNER_CLAIM', partnerClaim, partner, 'pay:a:p11')));
   });
 
   it('LP6: P6 mirrors this payment\'s own P1 and releases it once; with the USDC at a partner it follows P2R or P11 (B1, B2, §9.3)', async () => {
@@ -358,7 +403,7 @@ describe.each(FACTORIES)('LedgerPort contract: %s', (_name, make) => {
       template,
     });
     const no = async (req: JournalRequest, detail: RegExp): Promise<void> => {
-      expect(await l.postJournal(req)).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail });
+      expect(await l.postJournal(req)).toMatchObject({ kind: 'REJECTED', code: 'BINDING_MISMATCH', detail: expect.stringMatching(detail) });
     };
     // Another payment's reservation is never released for a payment that has none.
     okValue(await l.postJournal(reserve(pid2, 600_000n)));

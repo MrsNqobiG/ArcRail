@@ -65,7 +65,7 @@ describe.each(FACTORIES)('PayoutPartnerPort contract: %s', (_name, make) => {
     const good = signFakeCallback(SECRET, { payoutId, state: 'PAID', reason: null });
     const forged = signFakeCallback(randomBytes(32), { payoutId, state: 'PAID', reason: null });
     const bad = (raw: Uint8Array, headers: Readonly<Record<string, string>>, why: RegExp): void => {
-      expect(p.verifyCallback(raw, headers)).toMatchObject({ kind: 'REJECTED', code: 'BAD_SIGNATURE', detail: why });
+      expect(p.verifyCallback(raw, headers)).toMatchObject({ kind: 'REJECTED', code: 'BAD_SIGNATURE', detail: expect.stringMatching(why) });
     };
     bad(forged.rawBody, forged.headers, /HMAC mismatch/);
     bad(good.rawBody, {}, /missing or malformed/);

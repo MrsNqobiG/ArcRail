@@ -19,7 +19,7 @@ const ZARF = fiatCode('ZAR');
 const k1 = idempotencyKey('k:1');
 const k2 = idempotencyKey('k:2');
 const lot = { from: cbsMinor(37n), to: cbsMinor(20000n) };
-const pair = { from: ZAR, fromPrecision: P2, to: USDC, toPrecision: P6 };
+const pair = { from: ZAR, fromPrec: P2, to: USDC, toPrec: P6 };
 
 const fxMakers: [string, (clock: ManualClock, faults: FaultPlan) => FxPort][] = [
   ['LotTableFx', (clock, faults) => new LotTableFx({ clock, pairs: [{ ...pair, lot }], ttlMs: 1000n, limit: cbsMinor(10_000_000n), faults })],
@@ -37,7 +37,9 @@ describe.each(fxMakers)('FxPort contract: %s', (_name, make) => {
     expect(checkFxLock(req, r.value, P6)).toBeNull();
     expect(r.value.expiresAtMs).toBe(1500n);
     expect(r.value.quote.to.amount).toBe(5_400_000n);
-    expect(r.value.quote.remainder).toBe(10n);
+    // R2 B1: the remainder (10 cents) is worth far more than one USDC unit, so the engine reports its effective rate with remainder 0.
+    expect(r.value.quote.remainder).toBe(0n);
+    expect(r.value.quote.rate).toEqual({ numerator: 5_400_000n, denominator: 10_000n });
     expect(r.value.quote.expiresAt).toBe('ms:1500');
     const to: QuoteRequest = { ...req, side: 'TO_EXACT', amount: cbsMinor(5_400_000n) };
     const t = await fx.lockRate(k2, to);
@@ -91,7 +93,7 @@ describe.each(payoutMakers)('PayoutQuotePort contract: %s', (_name, make) => {
     const s = await po.quotePayout(k1, preq);
     if (s.kind !== 'OK') throw new Error('expected OK');
     expect(checkPayoutQuote(preq, s.value, P6)).toBeNull();
-    expect(s.value).toMatchObject({ source: 5_410_000n, remainder: 10_000n, gross: 9990n, fee: 100n, net: 9890n, expiresAtMs: 800n });
+    expect(s.value).toMatchObject({ sourceAsset: USDC, source: 5_410_000n, remainder: 0n, rate: { numerator: 9990n, denominator: 5_410_000n }, gross: 9990n, fee: 100n, net: 9890n, expiresAtMs: 800n });
     const nreq: PayoutQuoteRequest = { ...preq, side: 'NET_EXACT', amount: cbsMinor(9890n) };
     const n = await po.quotePayout(k2, nreq);
     if (n.kind !== 'OK') throw new Error('expected OK');
@@ -131,5 +133,20 @@ describe('ManualClock', () => {
     expect(c.nowMs()).toBe(10n);
     c.advance(5n);
     expect(c.nowMs()).toBe(15n);
+  });
+});
+
+describe('payout fakes keep a remainder only when it is worth less than one payout unit (R2 B1)', () => {
+  const cents = { lot: { from: cbsMinor(10000n), to: cbsMinor(1n) }, fee: cbsMinor(50n) };
+  const usd = fiatCode('USD');
+  const req: PayoutQuoteRequest = { source: USDC, currency: usd, side: 'SOURCE_EXACT', amount: cbsMinor(1_005_000n) };
+  it.each([
+    ['LotTablePayoutQuotes', (clock: ManualClock): PayoutQuotePort => new LotTablePayoutQuotes({ clock, source: USDC, sourcePrecision: P6, prices: new Map([[usd, cents]]), ttlMs: 700n, limit: cbsMinor(100_000_000n) })],
+    ['BandedPayoutQuotes', (clock: ManualClock): PayoutQuotePort => new BandedPayoutQuotes({ clock, source: USDC, sourcePrecision: P6, bands: [{ currency: usd, upTo: cbsMinor(100_000_000n), price: cents }], ttlMs: 700n })],
+  ])('%s: 1 cent per 10_000 units keeps the 5_000-unit remainder (worth half a cent)', async (_n, make) => {
+    const r = await make(new ManualClock(0n)).quotePayout(k1, req);
+    if (r.kind !== 'OK') throw new Error('expected OK');
+    expect(checkPayoutQuote(req, r.value, P6)).toBeNull();
+    expect(r.value).toMatchObject({ remainder: 5_000n, rate: { numerator: 1n, denominator: 10_000n }, gross: 100n });
   });
 });

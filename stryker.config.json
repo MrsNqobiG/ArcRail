@@ -7,6 +7,8 @@
     "configFile": "vitest.config.ts"
   },
   "coverageAnalysis": "perTest",
+  "concurrency": 2,
+  "_concurrency_comment": "Up to 8 agents run Stryker at once on a 10-core/3 GB WSL; the default (cores-1 workers per run) swapped the machine. 2 workers per run keeps total load within RAM. Speed only; no threshold or mutant set changes.",
   "mutate": [
     "src/amounts/index.ts",
     "src/ingestion/index.ts",
@@ -44,7 +46,17 @@
     "src/dfns/client.ts",
     "src/dfns/webhook.ts",
     "src/gateway/index.ts",
-    "src/gateway/wrapper.ts"
+    "src/gateway/wrapper.ts",
+    "src/journey/quote/fiat.ts",
+    "src/journey/quote/ports.ts",
+    "src/journey/quote/compose.ts",
+    "src/journey/payout/partner/port.ts",
+    "src/journey/payout/partner/tracker.ts",
+    "src/journey/payout/partner/core.ts",
+    "src/journey/payout/partner/fake.ts",
+    "src/journey/payout/partner/cpn-stub.ts",
+    "src/journey/recipients/index.ts",
+    "src/history/index.ts"
   ],
   "ignorePatterns": [
     ".tools",

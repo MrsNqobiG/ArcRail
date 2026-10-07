@@ -83,7 +83,7 @@ describe.each(FACTORIES)('GasDustStore contract: %s', (_name, make) => {
     expect(okValue(await d.balance(HOT)).gasDustWei).toBe(1_400_000_000_000n);
     const sk = (n: bigint) => idempotencyKey(`dust:5042002:wt${'0'.repeat(32)}:${n}`);
     expect(await d.sweep(sk(1n), HOT, 1n, cbsMinor(2n), nativeWei(2n * K6))).toMatchObject({ kind: 'REJECTED', code: 'INSUFFICIENT_DUST' });
-    expect(await d.sweep(sk(2n), HOT, 2n, cbsMinor(1n), nativeWei(K6))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: /not the next sweep/ });
+    expect(await d.sweep(sk(2n), HOT, 2n, cbsMinor(1n), nativeWei(K6))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: expect.stringMatching(/not the next sweep/) });
     await expect(d.sweep(sk(1n), HOT, 1n, cbsMinor(1n), nativeWei(K6 - 1n))).rejects.toThrow(/j·k wei/);
     await expect(d.sweep(sk(1n), HOT, 1n, cbsMinor(0n), nativeWei(0n))).rejects.toThrow(/j·k wei/);
     const swept = okValue(await d.sweep(sk(1n), HOT, 1n, cbsMinor(1n), nativeWei(K6)));
@@ -91,9 +91,9 @@ describe.each(FACTORIES)('GasDustStore contract: %s', (_name, make) => {
     expect(await d.sweep(sk(1n), HOT, 1n, cbsMinor(1n), nativeWei(K6))).toEqual({ kind: 'OK', value: swept, replayed: true });
     expect(okValue(await d.balance(HOT))).toEqual({ gasDustWei: 400_000_000_000n, subminorWei: 0n, nextSeq: 2n });
     expect(okValue(await d.balance(GAS)).nextSeq).toBe(1n);
-    expect(await d.sweep(idempotencyKey('dust:gas:1'), GAS, 1n, cbsMinor(1n), nativeWei(K6))).toMatchObject({ kind: 'REJECTED', code: 'INSUFFICIENT_DUST', detail: /gas dust 0 wei/ });
+    expect(await d.sweep(idempotencyKey('dust:gas:1'), GAS, 1n, cbsMinor(1n), nativeWei(K6))).toMatchObject({ kind: 'REJECTED', code: 'INSUFFICIENT_DUST', detail: expect.stringMatching(/gas dust 0 wei/) });
     okValue(await d.record(gasKey('7c'), gasEntry(900_000_000_000n, HOT, tx('7c'))));
-    expect(await d.sweep(sk(3n), HOT, 1n, cbsMinor(1n), nativeWei(K6))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: /sweep 1 is not the next sweep \(2\)/ });
+    expect(await d.sweep(sk(3n), HOT, 1n, cbsMinor(1n), nativeWei(K6))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: expect.stringMatching(/sweep 1 is not the next sweep \(2\)/) });
     expect(okValue(await d.sweep(sk(2n), HOT, 2n, cbsMinor(1n), nativeWei(K6)))).toEqual({ balanceWei: 300_000_000_000n });
     expect(okValue(await d.balance(HOT)).nextSeq).toBe(3n);
     // m4 (M21): a sweep of exactly the whole dust balance is allowed and leaves zero.

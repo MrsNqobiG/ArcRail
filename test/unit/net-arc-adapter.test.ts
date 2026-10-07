@@ -26,6 +26,7 @@ const input: ArcConfigInput = {
   stallAfterMs: 30_000n,
   startBlock: 100n,
   blocklistMaxAgeMs: 60_000n,
+  headRegressionToleranceBlocks: 5n,
 };
 const MAINNET = BigInt(ARC_MAINNET_DISABLED.chainId);
 
@@ -73,6 +74,9 @@ describe('loadArcNetworkParams', () => {
     expect(p.singleSourceTestnetOnly).toBe(true);
     expect(loadArcNetworkParams({ ...input, headRegressionToleranceBlocks: 0n }).headRegressionToleranceBlocks).toBe(0n);
     expect(loadArcNetworkParams({ ...input, headRegressionToleranceBlocks: 7n }).headRegressionToleranceBlocks).toBe(7n);
+    // lensR-1 m5: no default; an input without it is refused by the type and at runtime, never silently 5.
+    const { headRegressionToleranceBlocks: _omitted, ...without } = input;
+    expect(() => loadArcNetworkParams(without as ArcConfigInput)).toThrow(new ArcConfigError('headRegressionToleranceBlocks is required (no default)'));
     expect(p.startBlock).toBe(0n);
   });
 

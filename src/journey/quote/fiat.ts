@@ -9,9 +9,12 @@
  * - checked same-currency add and subtract; a negative difference throws.
  *
  * Mixing currencies is a compile error when the currency is a literal type
- * (`FiatAmount<'ZAR'>` vs `FiatAmount<'USD'>`). Currencies known only at run
- * time are typed `FiatCode`, so every operation here also checks the currency
- * at run time and throws `FiatCurrencyMismatchError` (fail closed).
+ * (`FiatAmount<'ZAR'>` vs `FiatAmount<'USD'>`): the second operand is typed
+ * `NoInfer<C>`, so C is taken from the first operand only and never widened
+ * to a union (compile-fail proof: test/types/fiat-mixing.typecheck.ts).
+ * Currencies known only at run time are typed `FiatCode`, so every operation
+ * here also checks the currency at run time and throws
+ * `FiatCurrencyMismatchError` (fail closed).
  *
  * The minor unit of a currency is the one Nova's ledger uses for that asset
  * code [A-03]; this module never scales between precisions. There is no
@@ -70,12 +73,12 @@ function sameCurrency(a: FiatAmount<string>, b: FiatAmount<string>): void {
   if (a.currency !== b.currency) throw new FiatCurrencyMismatchError(a.currency, b.currency);
 }
 
-export function addFiat<C extends string>(a: FiatAmount<C>, b: FiatAmount<C>): FiatAmount<C> {
+export function addFiat<C extends string>(a: FiatAmount<C>, b: FiatAmount<NoInfer<C>>): FiatAmount<C> {
   sameCurrency(a, b);
   return fiatAmount(a.currency, a.minor + b.minor);
 }
 
-export function subtractFiat<C extends string>(a: FiatAmount<C>, b: FiatAmount<C>): FiatAmount<C> {
+export function subtractFiat<C extends string>(a: FiatAmount<C>, b: FiatAmount<NoInfer<C>>): FiatAmount<C> {
   sameCurrency(a, b);
   return fiatAmount(a.currency, a.minor - b.minor);
 }

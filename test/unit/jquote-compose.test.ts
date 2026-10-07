@@ -16,7 +16,7 @@ import {
   quoteDigest,
   quoteFields,
 } from '../../src/journey/quote/compose.js';
-import type { CrossBorderConfig, JourneyMoney, JourneyQuote, JourneyQuoteRequest, QuoteConfig, QuoteDeps, QuoteRefusal, SettlementAsset } from '../../src/journey/quote/compose.js';
+import type { CrossBorderConfig, JourneyMoney, JourneyQuote, JourneyQuoteRequest, QuoteConfig, QuoteDeps, QuoteRefusal, SettlementAsset, WiredPayoutPartner } from '../../src/journey/quote/compose.js';
 import { fiatAmount } from '../../src/journey/quote/fiat.js';
 import { LotTableFx, LotTablePayoutQuotes, ManualClock } from '../../src/journey/quote/fakes.js';
 import type { FxPort, PartnerKind, PayoutQuote, PayoutQuotePort } from '../../src/journey/quote/ports.js';
@@ -38,6 +38,13 @@ const T0 = 1_000_000n;
 
 const settlement: SettlementAsset = { network: 'ARC', asset: 'USDC', ledgerCode: USDC, precision: P6 };
 const DEMO: CrossBorderConfig = { mode: 'TESTNET_DEMO_STUB_ONLY', chainId: 5042002n };
+const ARC_TESTNET = 5042002n;
+const ARC_PIN = { network: 'ARC', chainId: ARC_TESTNET } as const;
+
+/** The composition root's wiring of a partner port: it declares the kind it wired. */
+function wired(port: PayoutQuotePort, kind: PartnerKind = port.partnerKind): WiredPayoutPartner {
+  return { port, kind };
+}
 
 function cfg(over: Partial<QuoteConfig> = {}): QuoteConfig {
   return {
@@ -47,6 +54,7 @@ function cfg(over: Partial<QuoteConfig> = {}): QuoteConfig {
     crossBorder: { mode: 'OFF' },
     ttlMs: 60_000n,
     gasCharging: 'COMPANY_ABSORBS',
+    platformFeeMinor: cbsMinor(0n),
     ...over,
   };
 }
@@ -66,7 +74,7 @@ function world(gas: NativeWei = GAS, limits: { fx?: bigint; payout?: bigint } = 
   const payoutFaults = new FaultPlan();
   const fx = new LotTableFx({
     clock,
-    pairs: [{ from: ledgerAssetCode('ZAR'), fromPrecision: P2, to: USDC, toPrecision: P6, lot: { from: cbsMinor(37n), to: cbsMinor(20000n) } }],
+    pairs: [{ from: ledgerAssetCode('ZAR'), fromPrec: P2, to: USDC, toPrec: P6, lot: { from: cbsMinor(37n), to: cbsMinor(20000n) } }],
     ttlMs: 30_000n,
     limit: cbsMinor(limits.fx ?? 10_000_000n),
     faults: fxFaults,
@@ -83,7 +91,7 @@ function world(gas: NativeWei = GAS, limits: { fx?: bigint; payout?: bigint } = 
     limit: cbsMinor(limits.payout ?? 100_000_000n),
     faults: payoutFaults,
   });
-  return { clock, fx, payout, fxFaults, payoutFaults, deps: { clock, fx, payout, networkFeeAllowanceWei: (n) => (n === 'ARC' ? gas : nativeWei(0n)) } };
+  return { clock, fx, payout, fxFaults, payoutFaults, deps: { clock, settlementNetwork: ARC_PIN, fx, payout: wired(payout), networkFeeAllowanceWei: (n) => (n === 'ARC' ? gas : nativeWei(0n)) } };
 }
 
 const BAL: PayInMethod = { method: 'STABLECOIN_BALANCE', asset: 'USDC', network: 'ARC' };
@@ -152,7 +160,7 @@ describe('JQUOTE stablecoin pay-in -> stablecoin wallet (no conversion, no payou
     const w = world();
     const fx = spyFx(w.fx);
     const po = spyPayout(w.payout);
-    const q = await quoteOk(request(BAL, WALLET, 'SEND_EXACT', usdc(5_000_000n)), cfg(), { ...w.deps, fx, payout: po });
+    const q = await quoteOk(request(BAL, WALLET, 'SEND_EXACT', usdc(5_000_000n)), cfg(), { ...w.deps, fx, payout: wired(po) });
     expect(fx.calls).toBe(0n);
     expect(po.calls).toBe(0n);
     expect(q.legs).toEqual(['RESERVE', 'ARC_TRANSFER']);
@@ -190,7 +198,7 @@ describe('JQUOTE stablecoin pay-in -> stablecoin wallet (no conversion, no payou
     expect(q.arcTransfer.amount).toBe(4_999_580n);
     expect(q.arcTransfer.gasChargeMinor).toBe(420n);
     expect(q.arcTransfer.gasDustWei).toBe(123n);
-    expect(q.dust).toEqual([{ source: 'GAS_ALLOWANCE_SUBMINOR', wei: 123n, suspense: 'GL-4 arc.gasDust' }]);
+    expect(q.dust).toEqual([{ source: 'GAS_ALLOWANCE_SUBMINOR', wei: 123n, posting: 'NON_POSTING' }]);
     expect(q.allInRate).toEqual({ numerator: 4_999_580n, denominator: 5_000_000n });
   });
 
@@ -213,7 +221,7 @@ describe('JQUOTE stablecoin pay-in -> stablecoin wallet (no conversion, no payou
   it('refuses an amount that does not cover the charged network fee', async () => {
     const w = world();
     expect(await composeJourneyQuote(request(BAL, WALLET, 'SEND_EXACT', usdc(420n)), cfg({ gasCharging: 'CHARGED_TO_PAYER' }), w.deps)).toEqual(
-      refusal('AMOUNT_TOO_SMALL', 'the amount does not cover the network fee'),
+      refusal('AMOUNT_TOO_SMALL', 'the amount does not cover the customer fee'),
     );
     const q = await quoteOk(request(BAL, WALLET, 'SEND_EXACT', usdc(421n)), cfg({ gasCharging: 'CHARGED_TO_PAYER' }), w.deps);
     expect(q.recipient).toEqual(usdc(1n));
@@ -221,7 +229,7 @@ describe('JQUOTE stablecoin pay-in -> stablecoin wallet (no conversion, no payou
 });
 
 describe('JQUOTE fiat pay-in -> stablecoin wallet (CONVERT_IN only)', () => {
-  it('SEND_EXACT R100.00: FX remainder recorded for Nova engine suspense; expiry is the FX lock', async () => {
+  it('SEND_EXACT R100.00: the engine quotes at its effective rate, so no value is hidden as FX dust (R2 B1)', async () => {
     const w = world();
     const q = await quoteOk(request(FIAT_ZAR, WALLET, 'SEND_EXACT', fiat('ZAR', 10000n)), cfg(), w.deps);
     expect(q.legs).toEqual(['RESERVE', 'CONVERT_IN', 'ARC_TRANSFER']);
@@ -231,16 +239,28 @@ describe('JQUOTE fiat pay-in -> stablecoin wallet (CONVERT_IN only)', () => {
       leg: 'CONVERT_IN',
       fxQuoteId: 'fx-1',
       provider: 'lot-table',
-      rate: { numerator: 20000n, denominator: 37n },
+      rate: { numerator: 5_400_000n, denominator: 10000n },
       from: { currency: 'ZAR', minor: 10000n },
       to: 5_400_000n,
-      remainder: { currency: 'ZAR', minor: 10n },
+      remainder: { currency: 'ZAR', minor: 0n },
       expiresAtMs: T0 + 30_000n,
     });
-    expect(q.dust).toEqual([{ source: 'FX_REMAINDER', fiat: { currency: 'ZAR', minor: 10n }, suspense: 'NOVA_FX_ENGINE_SUSPENSE' }]);
+    expect(q.dust).toEqual([]);
     expect(q.expiresAtMs).toBe(T0 + 30_000n);
     expect(q.payoutLine).toBeNull();
     expect(q.allInRate).toEqual({ numerator: 5_400_000n, denominator: 10000n });
+  });
+
+  it('SEND_EXACT: an FX remainder worth under one USDC unit is recorded for Nova engine suspense', async () => {
+    // A coarse engine rate of 1 USDC unit per 1_000 cents (synthetic): 10 cents of the 10_010 are worth 0.01 unit.
+    const w = world();
+    const fx = spyFx(w.fx, undefined, (r) =>
+      r.kind === 'OK' ? { ...r, value: { ...r.value, quote: { ...r.value.quote, rate: { numerator: 1n, denominator: 1000n }, to: { ...r.value.quote.to, amount: cbsMinor(10n) }, remainder: cbsMinor(10n) } } } : r,
+    );
+    const q = await quoteOk(request(FIAT_ZAR, WALLET, 'SEND_EXACT', fiat('ZAR', 10010n)), cfg(), { ...w.deps, fx });
+    expect(q.convertIn?.remainder).toEqual({ currency: 'ZAR', minor: 10n });
+    expect(q.recipient).toEqual(usdc(10n));
+    expect(q.dust).toEqual([{ source: 'FX_REMAINDER', fiat: { currency: 'ZAR', minor: 10n }, suspense: 'NOVA_FX_ENGINE_SUSPENSE' }]);
   });
 
   it('SEND_EXACT with no FX remainder records no FX dust', async () => {
@@ -267,34 +287,46 @@ describe('JQUOTE fiat pay-in -> stablecoin wallet (CONVERT_IN only)', () => {
 });
 
 describe('JQUOTE stablecoin pay-in -> fiat bank (PAYOUT only)', () => {
-  it('SEND_EXACT: a partner remainder is re-quoted once and set aside as dust; partner funded with exactly what it converts', async () => {
+  it('SEND_EXACT: a partner remainder worth under one payout unit is re-quoted once and set aside as dust; partner funded with exactly what it converts', async () => {
+    // USD lot: 10_000 USDC units -> 1 cent. 1_005_000 = 100 lots + 5_000 units (worth half a cent, below one unit).
     const w = world();
     const po = spyPayout(w.payout);
-    const q = await quoteOk(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(5_410_000n)), cfg(), { ...w.deps, payout: po });
+    const q = await quoteOk(request(BAL, BANK_USD, 'SEND_EXACT', usdc(1_005_000n)), cfg({ crossBorder: DEMO }), { ...w.deps, payout: wired(po) });
     expect(po.calls).toBe(2n);
     expect(q.legs).toEqual(['RESERVE', 'ARC_TRANSFER', 'PAYOUT']);
     expect(q.arcTransfer.destination).toBe('PARTNER_SETTLEMENT');
-    expect(q.arcTransfer.amount).toBe(5_400_000n);
+    expect(q.arcTransfer.amount).toBe(1_000_000n);
     expect(q.payoutLine).toEqual({
       leg: 'PAYOUT',
       payoutQuoteId: 'po-2',
       partnerKind: 'TEST_FAKE',
-      rate: { numerator: 37n, denominator: 20000n },
-      source: 5_400_000n,
-      gross: { currency: 'ZAR', minor: 9990n },
-      fee: { currency: 'ZAR', minor: 100n },
-      net: { currency: 'ZAR', minor: 9890n },
+      rate: { numerator: 1n, denominator: 10000n },
+      source: 1_000_000n,
+      gross: { currency: 'USD', minor: 100n },
+      fee: { currency: 'USD', minor: 50n },
+      net: { currency: 'USD', minor: 50n },
       expiresAtMs: T0 + 20_000n,
     });
-    expect(q.recipient).toEqual(fiat('ZAR', 9890n));
-    expect(q.dust).toEqual([{ source: 'PAYOUT_REMAINDER', usdcMinor: 10_000n, suspense: 'GL-4 arc.quoteDust' }]);
+    expect(q.recipient).toEqual(fiat('USD', 50n));
+    expect(q.dust).toEqual([{ source: 'PAYOUT_REMAINDER', usdcMinor: 5_000n, suspense: 'GL-4 arc.quoteDust' }]);
     expect(q.expiresAtMs).toBe(T0 + 20_000n);
+  });
+
+  it('SEND_EXACT ZAR: a lot whose remainder would be worth more than a cent is quoted at the effective rate, in one call, with no dust (R2 B1)', async () => {
+    const w = world();
+    const po = spyPayout(w.payout);
+    const q = await quoteOk(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(5_410_000n)), cfg(), { ...w.deps, payout: wired(po) });
+    expect(po.calls).toBe(1n);
+    expect(q.arcTransfer.amount).toBe(5_410_000n);
+    expect(q.payoutLine?.rate).toEqual({ numerator: 9990n, denominator: 5_410_000n });
+    expect(q.recipient).toEqual(fiat('ZAR', 9890n));
+    expect(q.dust).toEqual([]);
   });
 
   it('SEND_EXACT with an exact partner amount quotes once', async () => {
     const w = world();
     const po = spyPayout(w.payout);
-    const q = await quoteOk(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(5_400_000n)), cfg(), { ...w.deps, payout: po });
+    const q = await quoteOk(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(5_400_000n)), cfg(), { ...w.deps, payout: wired(po) });
     expect(po.calls).toBe(1n);
     expect(q.payoutLine?.payoutQuoteId).toBe('po-1');
     expect(q.dust).toEqual([]);
@@ -311,20 +343,22 @@ describe('JQUOTE stablecoin pay-in -> fiat bank (PAYOUT only)', () => {
 
   it('a partner whose second quote still leaves a remainder is refused (NO_ROUTE)', async () => {
     const w = world();
+    // An honest answer at another rate (1/7) that still leaves 1 unit (worth under a cent): 1_000_000 = 142_857 x 7 + 1.
     const bad: PayoutQuote = {
       payoutQuoteId: 'x',
-      currency: ZAR,
-      source: cbsMinor(5_400_000n),
+      sourceAsset: USDC,
+      currency: USD,
+      source: cbsMinor(1_000_000n),
       sourcePrecision: P6,
-      rate: { numerator: 37n, denominator: 20000n },
-      remainder: cbsMinor(20_000n),
-      gross: cbsMinor(9953n),
-      fee: cbsMinor(100n),
-      net: cbsMinor(9853n),
+      rate: { numerator: 1n, denominator: 7n },
+      remainder: cbsMinor(1n),
+      gross: cbsMinor(142_857n),
+      fee: cbsMinor(50n),
+      net: cbsMinor(142_807n),
       expiresAtMs: T0 + 1n,
     };
     const po = spyPayout(w.payout, 'TEST_FAKE', (r, n) => (n === 2n ? { kind: 'OK', value: bad, replayed: false } : r));
-    expect(await composeJourneyQuote(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(5_410_000n)), cfg(), { ...w.deps, payout: po })).toEqual(
+    expect(await composeJourneyQuote(request(BAL, BANK_USD, 'SEND_EXACT', usdc(1_005_000n)), cfg({ crossBorder: DEMO }), { ...w.deps, payout: wired(po) })).toEqual(
       refusal('NO_ROUTE', 'partner cannot quote an exact source amount'),
     );
   });
@@ -332,10 +366,10 @@ describe('JQUOTE stablecoin pay-in -> fiat bank (PAYOUT only)', () => {
   it('a second partner call that is AMBIGUOUS or REJECTED stops the quote', async () => {
     const w = world();
     const amb = spyPayout(w.payout, 'TEST_FAKE', (r, n) => (n === 2n ? { kind: 'AMBIGUOUS', cause: 'TRANSPORT' } : r));
-    expect(await composeJourneyQuote(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(5_410_000n)), cfg(), { ...w.deps, payout: amb })).toEqual({ kind: 'AMBIGUOUS', cause: 'TRANSPORT' });
+    expect(await composeJourneyQuote(request(BAL, BANK_USD, 'SEND_EXACT', usdc(1_005_000n)), cfg({ crossBorder: DEMO }), { ...w.deps, payout: wired(amb) })).toEqual({ kind: 'AMBIGUOUS', cause: 'TRANSPORT' });
     const w2 = world();
     const rej = spyPayout(w2.payout, 'TEST_FAKE', (r, n) => (n === 2n ? { kind: 'REJECTED', code: 'LIMIT', detail: 'd' } : r));
-    expect(await composeJourneyQuote(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(5_410_000n)), cfg(), { ...w2.deps, payout: rej })).toEqual(refusal('LIMIT', 'd'));
+    expect(await composeJourneyQuote(request(BAL, BANK_USD, 'SEND_EXACT', usdc(1_005_000n)), cfg({ crossBorder: DEMO }), { ...w2.deps, payout: wired(rej) })).toEqual(refusal('LIMIT', 'd'));
   });
 });
 
@@ -344,17 +378,14 @@ describe('JQUOTE fiat pay-in -> fiat bank (CONVERT_IN and PAYOUT)', () => {
     const w = world();
     const q = await quoteOk(request(FIAT_ZAR, BANK_ZAR, 'SEND_EXACT', fiat('ZAR', 10010n)), cfg({ gasCharging: 'CHARGED_TO_PAYER' }), w.deps);
     expect(q.legs).toEqual(['RESERVE', 'CONVERT_IN', 'ARC_TRANSFER', 'PAYOUT']);
-    // 10010 cents = 270 lots (9990) + 20 remainder -> 5_400_000; less 420 gas = 5_399_580;
-    // partner: 269 lots (5_380_000) + 19_580 remainder -> 9953 gross, 9853 net.
+    // 10010 cents -> 5_400_000 units at the engine's effective rate (R2 B1: no hidden FX remainder);
+    // less 420 gas = 5_399_580; the partner converts all of it at its effective rate: 9953 gross, 9853 net.
     expect(q.convertIn?.to).toBe(5_400_000n);
-    expect(q.arcTransfer.amount).toBe(5_380_000n);
+    expect(q.convertIn?.remainder).toEqual({ currency: 'ZAR', minor: 0n });
+    expect(q.arcTransfer.amount).toBe(5_399_580n);
     expect(q.arcTransfer.gasChargeMinor).toBe(420n);
     expect(q.recipient).toEqual(fiat('ZAR', 9853n));
-    expect(q.dust).toEqual([
-      { source: 'FX_REMAINDER', fiat: { currency: 'ZAR', minor: 20n }, suspense: 'NOVA_FX_ENGINE_SUSPENSE' },
-      { source: 'GAS_ALLOWANCE_SUBMINOR', wei: 123n, suspense: 'GL-4 arc.gasDust' },
-      { source: 'PAYOUT_REMAINDER', usdcMinor: 19_580n, suspense: 'GL-4 arc.quoteDust' },
-    ]);
+    expect(q.dust).toEqual([{ source: 'GAS_ALLOWANCE_SUBMINOR', wei: 123n, posting: 'NON_POSTING' }]);
     expect(q.expiresAtMs).toBe(T0 + 20_000n);
     expect(q.allInRate).toEqual({ numerator: 9853n, denominator: 10010n });
   });
@@ -366,7 +397,7 @@ describe('JQUOTE fiat pay-in -> fiat bank (CONVERT_IN and PAYOUT)', () => {
     expect(q.convertIn?.to).toBe(5_420_000n);
     expect(q.payer).toEqual(fiat('ZAR', 271n * 37n));
     expect(q.recipient).toEqual(fiat('ZAR', 9890n));
-    expect(q.dust).toEqual([{ source: 'GAS_ALLOWANCE_SUBMINOR', wei: 7n, suspense: 'GL-4 arc.gasDust' }]);
+    expect(q.dust).toEqual([{ source: 'GAS_ALLOWANCE_SUBMINOR', wei: 7n, posting: 'NON_POSTING' }]);
   });
 });
 
@@ -378,7 +409,7 @@ describe('JQUOTE cross-border flag', () => {
   it('refuses a foreign-currency bank payout by default, before any port is called', async () => {
     const w = world();
     const po = spyPayout(w.payout);
-    expect(await composeJourneyQuote(request(BAL, BANK_USD, 'RECEIVE_EXACT', fiat('USD', 50n)), cfg(), { ...w.deps, payout: po })).toEqual(
+    expect(await composeJourneyQuote(request(BAL, BANK_USD, 'RECEIVE_EXACT', fiat('USD', 50n)), cfg(), { ...w.deps, payout: wired(po) })).toEqual(
       refusal('CROSS_BORDER_DISABLED', 'cross-border stays OFF until a legal opinion is recorded'),
     );
     expect(po.calls).toBe(0n);
@@ -397,7 +428,7 @@ describe('JQUOTE cross-border flag', () => {
     const w = world();
     const live = spyPayout(w.payout, 'LIVE');
     const refused = refusal('CROSS_BORDER_DISABLED', 'cross-border stays OFF until a legal opinion is recorded');
-    expect(await composeJourneyQuote(request(BAL, BANK_USD, 'RECEIVE_EXACT', fiat('USD', 50n)), cfg({ crossBorder: DEMO }), { ...w.deps, payout: live })).toEqual(refused);
+    expect(await composeJourneyQuote(request(BAL, BANK_USD, 'RECEIVE_EXACT', fiat('USD', 50n)), cfg({ crossBorder: DEMO }), { ...w.deps, payout: wired(live) })).toEqual(refused);
     expect(await composeJourneyQuote(request(FIAT_USD, WALLET, 'SEND_EXACT', fiat('USD', 100n)), cfg({ crossBorder: DEMO }), w.deps)).toEqual(refused);
     const mainnet = { mode: 'TESTNET_DEMO_STUB_ONLY', chainId: 5042n } as unknown as CrossBorderConfig;
     expect(await composeJourneyQuote(request(BAL, BANK_USD, 'RECEIVE_EXACT', fiat('USD', 50n)), cfg({ crossBorder: mainnet }), w.deps)).toEqual(refused);
@@ -413,16 +444,16 @@ describe('JQUOTE cross-border flag', () => {
   });
 
   it('crossBorderAllowed truth table', () => {
-    expect(crossBorderAllowed({ mode: 'OFF' }, BAL, BANK_USD, ZAR, 'TEST_FAKE')).toBe(false);
+    expect(crossBorderAllowed({ mode: 'OFF' }, ARC_TESTNET, BAL, BANK_USD, ZAR, 'TEST_FAKE')).toBe(false);
     const offWithChain = { mode: 'OFF', chainId: 5042002n } as unknown as CrossBorderConfig;
-    expect(crossBorderAllowed(offWithChain, BAL, BANK_USD, ZAR, 'TEST_FAKE')).toBe(false);
-    expect(crossBorderAllowed(DEMO, BAL, BANK_USD, ZAR, 'TEST_FAKE')).toBe(true);
-    expect(crossBorderAllowed(DEMO, BAL, BANK_USD, ZAR, 'STUB')).toBe(true);
-    expect(crossBorderAllowed(DEMO, FIAT_ZAR, BANK_USD, ZAR, 'STUB')).toBe(true);
-    expect(crossBorderAllowed(DEMO, BAL, BANK_USD, ZAR, 'LIVE')).toBe(false);
-    expect(crossBorderAllowed(DEMO, BAL, BANK_USD, ZAR, null)).toBe(false);
-    expect(crossBorderAllowed(DEMO, FIAT_USD, BANK_USD, ZAR, 'STUB')).toBe(false);
-    expect(crossBorderAllowed(DEMO, BAL, WALLET, ZAR, 'STUB')).toBe(false);
+    expect(crossBorderAllowed(offWithChain, ARC_TESTNET, BAL, BANK_USD, ZAR, 'TEST_FAKE')).toBe(false);
+    expect(crossBorderAllowed(DEMO, ARC_TESTNET, BAL, BANK_USD, ZAR, 'TEST_FAKE')).toBe(true);
+    expect(crossBorderAllowed(DEMO, ARC_TESTNET, BAL, BANK_USD, ZAR, 'STUB')).toBe(true);
+    expect(crossBorderAllowed(DEMO, ARC_TESTNET, FIAT_ZAR, BANK_USD, ZAR, 'STUB')).toBe(true);
+    expect(crossBorderAllowed(DEMO, ARC_TESTNET, BAL, BANK_USD, ZAR, 'LIVE')).toBe(false);
+    expect(crossBorderAllowed(DEMO, ARC_TESTNET, BAL, BANK_USD, ZAR, null)).toBe(false);
+    expect(crossBorderAllowed(DEMO, ARC_TESTNET, FIAT_USD, BANK_USD, ZAR, 'STUB')).toBe(false);
+    expect(crossBorderAllowed(DEMO, ARC_TESTNET, BAL, WALLET, ZAR, 'STUB')).toBe(false);
   });
 });
 
@@ -435,7 +466,7 @@ describe('JQUOTE refusals (nothing locked)', () => {
     const w = world();
     const fx = spyFx(w.fx);
     const po = spyPayout(w.payout);
-    const d = deps === undefined ? { ...w.deps, fx, payout: po } : deps(w);
+    const d = deps === undefined ? { ...w.deps, fx, payout: wired(po) } : deps(w);
     expect(await composeJourneyQuote(req, c, d)).toEqual(refusal(code, detail));
     expect(fx.calls).toBe(0n);
     expect(po.calls).toBe(0n);
@@ -580,7 +611,7 @@ describe('JQUOTE rate lock and expiry', () => {
       new QuoteIntegrityError('FxPort: conversion does not balance to the minor unit'),
     );
     const tamperedPo = spyPayout(w.payout, 'TEST_FAKE', (r) => (r.kind === 'OK' ? { ...r, value: { ...r.value, net: cbsMinor(r.value.net + 1n) } } : r));
-    await expect(composeJourneyQuote(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(5_400_000n)), cfg(), { ...w.deps, payout: tamperedPo })).rejects.toThrow(
+    await expect(composeJourneyQuote(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(5_400_000n)), cfg(), { ...w.deps, payout: wired(tamperedPo) })).rejects.toThrow(
       new QuoteIntegrityError('PayoutQuotePort: net is not gross minus fee'),
     );
     const e = new QuoteIntegrityError('x');
@@ -656,10 +687,11 @@ describe('JQUOTE quote fields (the binding digest input)', () => {
       'FIAT:ZAR:10010',
       'FIAT:ZAR:9853',
       '9853/10010',
-      `fx-1|lot-table|20000/37|ZAR:10010|5400000|ZAR:20|${T0 + 30_000n}`,
-      `ARC|USDC|PARTNER_SETTLEMENT|5380000|${5_380_000n * K}|${GAS}|420|123`,
-      `po-2|TEST_FAKE|37/20000|5380000|ZAR:9953|ZAR:100|ZAR:9853|${T0 + 20_000n}`,
-      'FX_REMAINDER:ZAR:20:NOVA_FX_ENGINE_SUSPENSE,GAS_ALLOWANCE_SUBMINOR:123:GL-4 arc.gasDust,PAYOUT_REMAINDER:19580:GL-4 arc.quoteDust',
+      '0|420|420',
+      `fx-1|lot-table|5400000/10010|ZAR:10010|5400000|ZAR:0|${T0 + 30_000n}`,
+      `ARC|USDC|PARTNER_SETTLEMENT|5399580|${5_399_580n * K}|${GAS}|420|123`,
+      `po-1|TEST_FAKE|9953/5399580|5399580|ZAR:9953|ZAR:100|ZAR:9853|${T0 + 20_000n}`,
+      'GAS_ALLOWANCE_SUBMINOR:123:NON_POSTING',
       'false',
       'false',
       `${T0}`,
@@ -680,6 +712,7 @@ describe('JQUOTE quote fields (the binding digest input)', () => {
       'STABLECOIN:USDC:5000000',
       'STABLECOIN:USDC:5000000',
       '5000000/5000000',
+      '0|0|0',
       '-',
       `ARC|USDC|RECEIVER_WALLET|5000000|${5_000_000n * K}|${GAS}|0|0`,
       '-',
@@ -692,8 +725,8 @@ describe('JQUOTE quote fields (the binding digest input)', () => {
     const d = await quoteOk(request(DEP, BANK_USD, 'RECEIVE_EXACT', fiat('USD', 50n)), cfg({ crossBorder: DEMO }), world().deps);
     const f = quoteFields(d);
     expect(f[3]).toBe('STABLECOIN_DEPOSIT:USDC:ARC');
-    expect(f[13]).toBe('true');
     expect(f[14]).toBe('true');
+    expect(f[15]).toBe('true');
   });
 });
 
@@ -711,28 +744,39 @@ describe('JQUOTE checkConservation', () => {
     ['zero Arc amount', (q) => ({ ...q, arcTransfer: { ...q.arcTransfer, amount: cbsMinor(0n), amountWei: nativeWei(0n) } }), 'nothing moves on Arc'],
     ['gas charge', (q) => ({ ...q, arcTransfer: { ...q.arcTransfer, gasChargeMinor: cbsMinor(421n) } }), 'gas charge is not the U1 split of the allowance'],
     ['gas dust', (q) => ({ ...q, arcTransfer: { ...q.arcTransfer, gasDustWei: nativeWei(124n) } }), 'gas charge is not the U1 split of the allowance'],
+    ['fee gas part', (q) => ({ ...q, customerFee: { ...q.customerFee, gasMinor: cbsMinor(0n), totalMinor: cbsMinor(0n) } }), 'customer fee does not carry the gas charge'],
+    ['fee total', (q) => ({ ...q, customerFee: { ...q.customerFee, totalMinor: cbsMinor(421n) } }), 'customer fee is not platform plus gas'],
+    ['fee platform', (q) => ({ ...q, customerFee: { ...q.customerFee, platformMinor: cbsMinor(1n) } }), 'customer fee is not platform plus gas'],
+    [
+      'FX remainder worth a whole unit (balanced)',
+      // rate 540 units per cent: (10020 - 20) x 540 = 5_400_000, but 20 cents are worth 10_800 units.
+      (q) => ({ ...q, payer: fiat('ZAR', 10020n), convertIn: q.convertIn === null ? null : { ...q.convertIn, rate: { numerator: 540n, denominator: 1n }, from: fiatAmount(ZAR, 10020n), remainder: fiatAmount(ZAR, 20n) } }),
+      'FX remainder is worth one target minor unit or more',
+    ],
+    [
+      'payout remainder worth a whole unit (balanced)',
+      (q) => ({
+        ...q,
+        recipient: fiat('ZAR', 9816n),
+        arcTransfer: { ...q.arcTransfer, amount: cbsMinor(5_360_000n), amountWei: nativeWei(5_360_000n * K) },
+        payoutLine: q.payoutLine === null ? null : { ...q.payoutLine, rate: { numerator: 37n, denominator: 20000n }, source: cbsMinor(5_360_000n), gross: fiatAmount(ZAR, 9916n), net: fiatAmount(ZAR, 9816n) },
+        dust: [...q.dust, { source: 'PAYOUT_REMAINDER', usdcMinor: cbsMinor(39_580n), suspense: 'GL-4 arc.quoteDust' }],
+      }),
+      'payout remainder is worth one target minor unit or more',
+    ],
     ['payer amount', (q) => ({ ...q, payer: fiat('ZAR', 10011n) }), 'payer debit is not the converted amount'],
     ['payer currency', (q) => ({ ...q, payer: fiat('USD', 10010n) }), 'payer debit is not the converted amount'],
     ['payer kind', (q) => ({ ...q, payer: usdc(10010n) }), 'payer debit is not the converted amount'],
     ['FX balance', (q) => ({ ...q, convertIn: q.convertIn === null ? null : { ...q.convertIn, remainder: fiatAmount(ZAR, 21n) } }), 'CONVERT_IN does not balance'],
-    ['USDC out', (q) => ({ ...q, arcTransfer: { ...q.arcTransfer, amount: cbsMinor(5_380_001n), amountWei: nativeWei(5_380_001n * K) } }), 'USDC in does not equal USDC out'],
-    ['partner funding', (q) => ({ ...q, payoutLine: q.payoutLine === null ? null : { ...q.payoutLine, source: cbsMinor(5_380_001n) } }), 'partner is not funded with the Arc amount'],
+    ['USDC out', (q) => ({ ...q, arcTransfer: { ...q.arcTransfer, amount: cbsMinor(5_399_581n), amountWei: nativeWei(5_399_581n * K) } }), 'USDC in does not equal USDC out'],
+    ['partner funding', (q) => ({ ...q, payoutLine: q.payoutLine === null ? null : { ...q.payoutLine, source: cbsMinor(5_399_581n) } }), 'partner is not funded with the Arc amount'],
     ['PAYOUT balance', (q) => ({ ...q, payoutLine: q.payoutLine === null ? null : { ...q.payoutLine, gross: fiatAmount(ZAR, 9954n) } }), 'PAYOUT does not balance'],
     ['net', (q) => ({ ...q, payoutLine: q.payoutLine === null ? null : { ...q.payoutLine, net: fiatAmount(ZAR, 9852n) } }), 'net is not gross minus fee'],
     ['receiver amount', (q) => ({ ...q, recipient: fiat('ZAR', 9852n) }), 'receiver amount is not the payout net'],
     ['receiver currency', (q) => ({ ...q, recipient: fiat('USD', 9853n) }), 'receiver amount is not the payout net'],
     ['receiver kind', (q) => ({ ...q, recipient: usdc(9853n) }), 'receiver amount is not the payout net'],
     ['dust dropped', (q) => ({ ...q, dust: q.dust.filter((d) => d.source !== 'GAS_ALLOWANCE_SUBMINOR') }), 'dust records do not match the legs'],
-    ['FX dust dropped', (q) => ({ ...q, dust: q.dust.filter((d) => d.source !== 'FX_REMAINDER') }), 'dust records do not match the legs'],
-    ['dust reordered', (q) => ({ ...q, dust: [...q.dust].reverse() }), 'dust records do not match the legs'],
-    [
-      'payout dust split in two',
-      (q) => ({
-        ...q,
-        dust: [...q.dust.filter((d) => d.source !== 'PAYOUT_REMAINDER'), { source: 'PAYOUT_REMAINDER', usdcMinor: cbsMinor(19_000n), suspense: 'GL-4 arc.quoteDust' }, { source: 'PAYOUT_REMAINDER', usdcMinor: cbsMinor(580n), suspense: 'GL-4 arc.quoteDust' }],
-      }),
-      'a payout remainder needs one positive record and a PAYOUT leg',
-    ],
+    ['FX dust without an FX remainder', (q) => ({ ...q, dust: [{ source: 'FX_REMAINDER', fiat: fiatAmount(ZAR, 20n), suspense: 'NOVA_FX_ENGINE_SUSPENSE' }, ...q.dust] }), 'dust records do not match the legs'],
     ['zero payout dust', (q) => ({ ...q, dust: [...q.dust, { source: 'PAYOUT_REMAINDER', usdcMinor: cbsMinor(0n), suspense: 'GL-4 arc.quoteDust' }] }), 'a payout remainder needs one positive record and a PAYOUT leg'],
     ['pay-in currency', (q) => ({ ...q, payIn: FIAT_USD }), 'payer debit is not in the pay-in currency'],
     ['payout currency', (q) => ({ ...q, payout: BANK_USD }), 'receiver amount is not in the payout currency'],
@@ -746,6 +790,50 @@ describe('JQUOTE checkConservation', () => {
 
   it.each(full)('refuses a full quote with a tampered %s', async (_name, tamper, why) => {
     expect(checkConservation(reseal(tamper(await fullQuote())), settlement)).toBe(why);
+  });
+
+  // m1 (R2): the value bound is exact at its edge, in the composer's own re-check.
+  // USD lot: 10_000 USDC units -> 1 cent (rate 1/10000). Remainder 9_999 is worth under a cent; 10_000 is worth one.
+  async function usdBase(): Promise<JourneyQuote> {
+    return quoteOk(request(BAL, BANK_USD, 'SEND_EXACT', usdc(1_005_000n)), cfg({ crossBorder: DEMO }), world().deps);
+  }
+  const withPayoutDust = (q: JourneyQuote, dust: bigint): JourneyQuote => {
+    const arc = 990_000n; // 99 lots: gross 99 cents, fee 50, net 49
+    const payer = arc + dust;
+    return {
+      ...q,
+      payer: usdc(payer),
+      recipient: fiat('USD', 49n),
+      allInRate: { numerator: 49n, denominator: payer },
+      arcTransfer: { ...q.arcTransfer, amount: cbsMinor(arc), amountWei: nativeWei(arc * K) },
+      payoutLine: q.payoutLine === null ? null : { ...q.payoutLine, source: cbsMinor(arc), gross: fiatAmount(USD, 99n), net: fiatAmount(USD, 49n) },
+      dust: [{ source: 'PAYOUT_REMAINDER', usdcMinor: cbsMinor(dust), suspense: 'GL-4 arc.quoteDust' }],
+    };
+  };
+
+  it('a payout remainder of 9_999 units (worth under one cent) conserves; 10_000 (one cent) is refused', async () => {
+    const q = await usdBase();
+    expect(checkConservation(reseal(withPayoutDust(q, 9_999n)), settlement)).toBeNull();
+    expect(checkConservation(reseal(withPayoutDust(q, 10_000n)), settlement)).toBe('payout remainder is worth one target minor unit or more');
+  });
+
+  it('dust records are matched in order, and a payout remainder is one positive record', async () => {
+    // USD bank, gas charged: dust = [gas allowance, payout remainder 4_580].
+    const q = await quoteOk(request(BAL, BANK_USD, 'SEND_EXACT', usdc(1_005_000n)), cfg({ crossBorder: DEMO, gasCharging: 'CHARGED_TO_PAYER' }), world().deps);
+    expect(q.dust.map((d) => d.source)).toEqual(['GAS_ALLOWANCE_SUBMINOR', 'PAYOUT_REMAINDER']);
+    expect(checkConservation(reseal({ ...q, dust: [...q.dust].reverse() }), settlement)).toBe('dust records do not match the legs');
+    const gas = q.dust.filter((d) => d.source === 'GAS_ALLOWANCE_SUBMINOR');
+    const split = [...gas, { source: 'PAYOUT_REMAINDER' as const, usdcMinor: cbsMinor(4_000n), suspense: 'GL-4 arc.quoteDust' as const }, { source: 'PAYOUT_REMAINDER' as const, usdcMinor: cbsMinor(580n), suspense: 'GL-4 arc.quoteDust' as const }];
+    expect(checkConservation(reseal({ ...q, dust: split }), settlement)).toBe('a payout remainder needs one positive record and a PAYOUT leg');
+  });
+
+  it('an FX remainder worth just under one unit conserves; one worth a whole unit is refused', async () => {
+    // rate 1 unit per 1_000 cents: remainder 999 cents is worth under one unit, 1_000 is worth one.
+    const w = world();
+    const mk = (rem: bigint): JourneyQuote => ({ ...fxBase, payer: fiat('ZAR', 10_000n + rem), convertIn: fxBase.convertIn === null ? null : { ...fxBase.convertIn, rate: { numerator: 1n, denominator: 1000n }, from: fiatAmount(ZAR, 10_000n + rem), to: cbsMinor(10n), remainder: fiatAmount(ZAR, rem) }, recipient: usdc(10n), arcTransfer: { ...fxBase.arcTransfer, amount: cbsMinor(10n), amountWei: nativeWei(10n * K) }, allInRate: { numerator: 10n, denominator: 10_000n + rem }, dust: [{ source: 'FX_REMAINDER', fiat: fiatAmount(ZAR, rem), suspense: 'NOVA_FX_ENGINE_SUSPENSE' }] });
+    const fxBase = await quoteOk(request(FIAT_ZAR, WALLET, 'SEND_EXACT', fiat('ZAR', 10_000n)), cfg(), w.deps);
+    expect(checkConservation(reseal(mk(999n)), settlement)).toBeNull();
+    expect(checkConservation(reseal(mk(1000n)), settlement)).toBe('FX remainder is worth one target minor unit or more');
   });
 
   const plain: [string, (q: JourneyQuote) => JourneyQuote, string][] = [
@@ -777,8 +865,9 @@ describe('JQUOTE checkConservation', () => {
       ...q,
       recipient: usdc(4_999_580n),
       allInRate: { numerator: 4_999_580n, denominator: 5_000_000n },
+      customerFee: { platformMinor: cbsMinor(0n), gasMinor: cbsMinor(420n), totalMinor: cbsMinor(420n) },
       arcTransfer: { ...q.arcTransfer, amount: cbsMinor(4_999_580n), amountWei: nativeWei(4_999_580n * K), gasChargeMinor: cbsMinor(420n), gasDustWei: nativeWei(123n) },
-      dust: [{ source: 'GAS_ALLOWANCE_SUBMINOR', wei: nativeWei(123n), suspense: 'GL-4 arc.gasDust' }],
+      dust: [{ source: 'GAS_ALLOWANCE_SUBMINOR', wei: nativeWei(123n), posting: 'NON_POSTING' }],
     });
     expect(checkConservation(charged, settlement)).toBeNull();
   });
@@ -793,6 +882,167 @@ describe('JQUOTE checkConservation', () => {
     const q = await fullQuote();
     expect(checkConservation({ ...q, requestId: 'req-x' }, settlement)).toBe('quote id is not the digest of its fields');
     expect(checkConservation({ ...q, quoteId: `jq-${'0'.repeat(64)}` }, settlement)).toBe('quote id is not the digest of its fields');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verifier JQUOTE-R1 fixes: withheld remainders (B1), sides sent (m5), the
+// demo gate bound to the adapter and the root's partner declaration (m4),
+// and the customer fee F (m7).
+// ---------------------------------------------------------------------------
+
+describe('JQUOTE a port remainder worth one target unit or more is refused, never booked as dust (R2 B1)', () => {
+  const REFUSED = 'remainder is worth one target minor unit or more';
+
+  it('A1: lot 100 USDC -> R1845.23, SEND_EXACT 150 USDC: 50 USDC kept as "remainder" -> QuoteIntegrityError, nothing quoted', async () => {
+    const w = world(GAS, { payout: 1_000_000_000n });
+    const po = spyPayout(w.payout, 'TEST_FAKE', (r) =>
+      r.kind === 'OK' ? { ...r, value: { ...r.value, source: cbsMinor(150_000_000n), rate: { numerator: 184_523n, denominator: 100_000_000n }, remainder: cbsMinor(50_000_000n), gross: cbsMinor(184_523n), fee: cbsMinor(100n), net: cbsMinor(184_423n) } } : r,
+    );
+    await expect(composeJourneyQuote(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(150_000_000n)), cfg(), { ...w.deps, payout: wired(po) })).rejects.toThrow(new QuoteIntegrityError(`PayoutQuotePort: ${REFUSED}`));
+  });
+
+  it('A2: a crafted partner rate 3/(2e8) keeps 199.999999 USDC as "remainder" -> QuoteIntegrityError', async () => {
+    const w = world(GAS, { payout: 1_000_000_000n });
+    const po = spyPayout(w.payout, 'TEST_FAKE', (r) =>
+      r.kind === 'OK' ? { ...r, value: { ...r.value, source: cbsMinor(399_999_999n), rate: { numerator: 3n, denominator: 200_000_000n }, remainder: cbsMinor(199_999_999n), gross: cbsMinor(3n), fee: cbsMinor(0n), net: cbsMinor(3n) } } : r,
+    );
+    await expect(composeJourneyQuote(request(BAL, BANK_ZAR, 'SEND_EXACT', usdc(399_999_999n)), cfg(), { ...w.deps, payout: wired(po) })).rejects.toThrow(new QuoteIntegrityError(`PayoutQuotePort: ${REFUSED}`));
+  });
+
+  it('A3: lot R1845.23 -> 100 USDC, R3000.00 in: R1154.77 kept as "remainder" -> QuoteIntegrityError', async () => {
+    const w = world();
+    const fx = spyFx(w.fx, undefined, (r) =>
+      r.kind === 'OK' ? { ...r, value: { ...r.value, quote: { ...r.value.quote, from: { ...r.value.quote.from, amount: cbsMinor(300_000n) }, to: { ...r.value.quote.to, amount: cbsMinor(100_000_000n) }, rate: { numerator: 100_000_000n, denominator: 184_523n }, remainder: cbsMinor(115_477n) } } } : r,
+    );
+    await expect(composeJourneyQuote(request(FIAT_ZAR, WALLET, 'SEND_EXACT', fiat('ZAR', 300_000n)), cfg(), { ...w.deps, fx })).rejects.toThrow(new QuoteIntegrityError(`FxPort: ${REFUSED}`));
+  });
+
+  it('the fakes answer the A1 and A3 shapes honestly: effective rate, remainder 0, nothing booked as dust', async () => {
+    const w = world();
+    const q = await quoteOk(request(FIAT_ZAR, WALLET, 'SEND_EXACT', fiat('ZAR', 300_000n)), cfg(), { ...w.deps });
+    expect(q.convertIn?.remainder).toEqual({ currency: 'ZAR', minor: 0n });
+    expect(q.dust).toEqual([]);
+  });
+});
+
+describe('JQUOTE the composer asks each port for the right side (m5)', () => {
+  function recorders(w: World): { fx: FxPort; po: PayoutQuotePort; fxSides: string[]; poSides: string[] } {
+    const fxSides: string[] = [];
+    const poSides: string[] = [];
+    const fx: FxPort = {
+      lockRate: async (k, r) => {
+        fxSides.push(r.side);
+        return w.fx.lockRate(k, r);
+      },
+    };
+    const po: PayoutQuotePort = {
+      partnerKind: 'TEST_FAKE',
+      quotePayout: async (k, r) => {
+        poSides.push(r.side);
+        return w.payout.quotePayout(k, r);
+      },
+    };
+    return { fx, po, fxSides, poSides };
+  }
+
+  it('SEND_EXACT: FX FROM_EXACT, partner SOURCE_EXACT (and SOURCE_EXACT again on a re-quote)', async () => {
+    const w = world();
+    const r = recorders(w);
+    // USD bank (testnet demo): 5_399_580 units = 539 lots of 10_000 + 9_580 (worth under one cent): a re-quote.
+    await quoteOk(request(FIAT_ZAR, BANK_USD, 'SEND_EXACT', fiat('ZAR', 10010n)), cfg({ gasCharging: 'CHARGED_TO_PAYER', crossBorder: DEMO }), { ...w.deps, fx: r.fx, payout: wired(r.po) });
+    expect(r.fxSides).toEqual(['FROM_EXACT']);
+    expect(r.poSides).toEqual(['SOURCE_EXACT', 'SOURCE_EXACT']);
+  });
+
+  it('RECEIVE_EXACT: partner NET_EXACT first, then FX TO_EXACT', async () => {
+    const w = world();
+    const r = recorders(w);
+    await quoteOk(request(FIAT_ZAR, BANK_ZAR, 'RECEIVE_EXACT', fiat('ZAR', 9890n)), cfg(), { ...w.deps, fx: r.fx, payout: wired(r.po) });
+    expect(r.poSides).toEqual(['NET_EXACT']);
+    expect(r.fxSides).toEqual(['TO_EXACT']);
+  });
+
+  it('fiat pay-in to a stablecoin wallet never calls the payout partner (both sides)', async () => {
+    for (const [side, amount] of [
+      ['SEND_EXACT', fiat('ZAR', 10000n)],
+      ['RECEIVE_EXACT', usdc(5_400_000n)],
+    ] as const) {
+      const w = world();
+      const po = spyPayout(w.payout);
+      const fx = spyFx(w.fx);
+      await quoteOk(request(FIAT_ZAR, WALLET, side, amount), cfg(), { ...w.deps, fx, payout: wired(po) });
+      expect(po.calls).toBe(0n);
+      expect(fx.calls).toBe(1n);
+    }
+  });
+});
+
+describe('JQUOTE demo gate bound to the network adapter and to the root-declared partner kind (m4)', () => {
+  const refused = refusal('CROSS_BORDER_DISABLED', 'cross-border stays OFF until a legal opinion is recorded');
+
+  it('the demo mode is refused when the settlement adapter is pinned to another chain, even with the testnet config literal', async () => {
+    const w = world();
+    const po = spyPayout(w.payout);
+    const mainnetAdapter = { ...w.deps, payout: wired(po), settlementNetwork: { network: 'ARC' as const, chainId: 5042n } };
+    expect(await composeJourneyQuote(request(BAL, BANK_USD, 'RECEIVE_EXACT', fiat('USD', 50n)), cfg({ crossBorder: DEMO }), mainnetAdapter)).toEqual(refused);
+    expect(po.calls).toBe(0n);
+    expect(crossBorderAllowed(DEMO, 5042n, BAL, BANK_USD, ZAR, 'TEST_FAKE')).toBe(false);
+    // A domestic quote does not depend on the demo gate.
+    await quoteOk(request(BAL, BANK_ZAR, 'RECEIVE_EXACT', fiat('ZAR', 9890n)), cfg(), mainnetAdapter);
+  });
+
+  it('an adapter for another network than the settlement asset fails closed', async () => {
+    const w = world();
+    await expect(composeJourneyQuote(request(BAL, WALLET, 'SEND_EXACT', usdc(1n)), cfg(), { ...w.deps, settlementNetwork: { network: 'FAKENET' as const, chainId: ARC_TESTNET } })).rejects.toThrow(
+      new QuoteIntegrityError('the settlement network adapter is not the configured settlement network'),
+    );
+  });
+
+  it('a port whose self-declared kind differs from the root declaration fails closed, before any call', async () => {
+    const w = world();
+    const po = spyPayout(w.payout, 'LIVE');
+    await expect(composeJourneyQuote(request(BAL, BANK_USD, 'RECEIVE_EXACT', fiat('USD', 50n)), cfg({ crossBorder: DEMO }), { ...w.deps, payout: wired(po, 'STUB') })).rejects.toThrow(
+      new QuoteIntegrityError('the payout port does not declare the partner kind the composition root wired'),
+    );
+    expect(po.calls).toBe(0n);
+  });
+
+  it('the payout line carries the root-declared kind', async () => {
+    const w = world();
+    const stub = spyPayout(w.payout, 'STUB');
+    const q = await quoteOk(request(BAL, BANK_USD, 'RECEIVE_EXACT', fiat('USD', 50n)), cfg({ crossBorder: DEMO }), { ...w.deps, payout: wired(stub, 'STUB') });
+    expect(q.payoutLine?.partnerKind).toBe('STUB');
+  });
+});
+
+describe('JQUOTE customer fee F = platform fee + charged gas, reserved with A (m7, design §9.2)', () => {
+  it('SEND_EXACT stablecoin -> wallet: A = debit - F; F carries both parts', async () => {
+    const q = await quoteOk(request(BAL, WALLET, 'SEND_EXACT', usdc(5_000_000n)), cfg({ gasCharging: 'CHARGED_TO_PAYER', platformFeeMinor: cbsMinor(1000n) }), world().deps);
+    expect(q.customerFee).toEqual({ platformMinor: 1000n, gasMinor: 420n, totalMinor: 1420n });
+    expect(q.arcTransfer.amount).toBe(4_998_580n);
+    expect(q.recipient).toEqual(usdc(4_998_580n));
+    expect(quoteFields(q)[9]).toBe('1000|420|1420');
+  });
+
+  it('platform fee alone (company absorbs gas)', async () => {
+    const q = await quoteOk(request(BAL, WALLET, 'SEND_EXACT', usdc(5_000_000n)), cfg({ platformFeeMinor: cbsMinor(1000n) }), world().deps);
+    expect(q.customerFee).toEqual({ platformMinor: 1000n, gasMinor: 0n, totalMinor: 1000n });
+    expect(q.recipient).toEqual(usdc(4_999_000n));
+    expect(await composeJourneyQuote(request(BAL, WALLET, 'SEND_EXACT', usdc(1000n)), cfg({ platformFeeMinor: cbsMinor(1000n) }), world().deps)).toEqual(
+      refusal('AMOUNT_TOO_SMALL', 'the amount does not cover the customer fee'),
+    );
+    expect((await quoteOk(request(BAL, WALLET, 'SEND_EXACT', usdc(1001n)), cfg({ platformFeeMinor: cbsMinor(1000n) }), world().deps)).recipient).toEqual(usdc(1n));
+  });
+
+  it('RECEIVE_EXACT: the payer covers A + F', async () => {
+    const q = await quoteOk(request(DEP, WALLET, 'RECEIVE_EXACT', usdc(1_000_000n)), cfg({ gasCharging: 'CHARGED_TO_PAYER', platformFeeMinor: cbsMinor(500n) }), world().deps);
+    expect(q.payer).toEqual(usdc(1_000_920n));
+    expect(q.customerFee.totalMinor).toBe(920n);
+    // fiat -> bank: FX converts exactly A + F (20_000 = 1 lot of fee, gas absorbed).
+    const f = await quoteOk(request(FIAT_ZAR, BANK_ZAR, 'RECEIVE_EXACT', fiat('ZAR', 9890n)), cfg({ platformFeeMinor: cbsMinor(20_000n) }), world().deps);
+    expect(f.convertIn?.to).toBe(5_420_000n);
+    expect(f.payer).toEqual(fiat('ZAR', 271n * 37n));
   });
 });
 

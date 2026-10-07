@@ -162,3 +162,5 @@ Money-path list growth (RUBRIC's closed list grows only by a LEDGER entry): 2026
 
 ## Notes
 - The repo root shows character-device entries (`.bashrc`, `.gitconfig`, `.mcp.json`, `.vscode`, `.idea`, …; all `c 1,3`, owner `nobody`). These are OS-sandbox bind-mount placeholders, not files. Never stage them.
+
+| 2026-10-07 14:00 | Speed-up 5 (operator: "you need to be done in 2 hours", fast mode unavailable; then "apps closed, raise the RAM") | Stryker `concurrency: 2` in stryker.config.json (default cores-1 workers per run swapped the machine; thresholds and mutant set unchanged). Fix agents (unit, delta, align) on Sonnet; every fix still re-verified by an Opus Lens R verifier. WSL memory 3 GB -> 5 GB (backup .wslconfig.bak-2026-10-07-3GB); run wc61mh326 stopped for the WSL restart and will resume from wf_2941be21-362. Finding: workflow cache keys depend on launch order, so the DAG restructure re-ran gen/verify for NET, DFNS, PORTS, JQUOTE (~25 min); keys are stable across the last runs. 15:20 target not reachable without dropping checks; no check dropped. | Claude (operator-directed) |

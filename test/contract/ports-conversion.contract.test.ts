@@ -67,7 +67,7 @@ describe.each(FACTORIES)('ConversionPort contract: %s', (_name, make) => {
     const q = okValue(await c.quote(K, req(1_000_000n, 'TO_EXACT')));
     expect(q).toMatchObject({ from: { amount: 1850n }, to: { amount: 1_000_000n }, remainder: 0n });
     expect(checkQuote(req(1_000_000n, 'TO_EXACT'), q)).toBeNull();
-    expect(await c.quote(idempotencyKey('conv:q2'), req(1_000_001n, 'TO_EXACT'))).toMatchObject({ kind: 'REJECTED', code: 'NO_ROUTE', detail: /exactly/ });
+    expect(await c.quote(idempotencyKey('conv:q2'), req(1_000_001n, 'TO_EXACT'))).toMatchObject({ kind: 'REJECTED', code: 'NO_ROUTE', detail: expect.stringMatching(/exactly/) });
   });
 
   it('nothing to convert, an unknown pair, or an amount above the limit is refused', async () => {

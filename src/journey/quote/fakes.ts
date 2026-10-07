@@ -20,11 +20,12 @@
  * AMBIGUOUS through a FaultPlan. They pass the same contract tests
  * (test/unit/jquote-fakes.test.ts).
  */
-import { addCbsMinor, subtractCbsMinor } from '../../amounts/index.js';
+import { addCbsMinor, cbsMinor, subtractCbsMinor } from '../../amounts/index.js';
 import type { CbsMinor, CbsPrecision } from '../../amounts/index.js';
 import type { Quote, QuoteRequest } from '../../nova-ports/conversion.js';
 import { exactConvert, lotRate } from '../../nova-ports/fakes/conversion-fakes.js';
 import type { Lot } from '../../nova-ports/fakes/conversion-fakes.js';
+import type { RatioQuote } from '../../nova-ports/conversion.js';
 import { afterCommit, faultBefore } from '../../nova-ports/fakes/faults.js';
 import type { FaultPlan } from '../../nova-ports/fakes/faults.js';
 import { ok, rejected } from '../../nova-ports/ids.js';
@@ -52,11 +53,23 @@ export class ManualClock implements Clock {
 // FxPort fakes.
 // ---------------------------------------------------------------------------
 
+/** Field names `fromPrec`/`toPrec` (not `…Precision`): the MC-01 Semgrep layer flags any `.toPrecision` member (verifier JQUOTE-R1 m3). */
 export interface FxPair {
   readonly from: LedgerAssetCode;
-  readonly fromPrecision: CbsPrecision;
+  readonly fromPrec: CbsPrecision;
   readonly to: LedgerAssetCode;
-  readonly toPrecision: CbsPrecision;
+  readonly toPrec: CbsPrecision;
+}
+
+/**
+ * An honest engine's rate for a conversion: the lot rate while the remainder is
+ * worth less than one target minor unit; otherwise the EFFECTIVE rate
+ * (to / from) with remainder 0, so no value is hidden as dust (verifier
+ * JQUOTE-R2 B1; `remainderBelowOneUnit` in ports.ts is what the composer checks).
+ */
+function honestRate(lot: Lot, c: { readonly from: CbsMinor; readonly to: CbsMinor; readonly remainder: CbsMinor }): { readonly rate: RatioQuote; readonly remainder: CbsMinor } {
+  if (c.remainder * lot.to < lot.from) return { rate: lotRate(lot), remainder: c.remainder };
+  return { rate: { numerator: c.to, denominator: c.from }, remainder: cbsMinor(0n) };
 }
 
 function fxCanonical(req: QuoteRequest): string {
@@ -66,12 +79,13 @@ function fxCanonical(req: QuoteRequest): string {
 function fxLock(id: string, pair: FxPair, lot: Lot, req: QuoteRequest, expiresAtMs: bigint, provider: string): FxLock | null {
   const c = exactConvert(req.amount, lot, req.side);
   if (c === null) return null;
+  const h = honestRate(lot, c);
   const quote: Quote = {
     quoteId: id,
-    from: { asset: pair.from, amount: c.from, precision: pair.fromPrecision },
-    to: { asset: pair.to, amount: c.to, precision: pair.toPrecision },
-    rate: lotRate(lot),
-    remainder: c.remainder,
+    from: { asset: pair.from, amount: c.from, precision: pair.fromPrec },
+    to: { asset: pair.to, amount: c.to, precision: pair.toPrec },
+    rate: h.rate,
+    remainder: h.remainder,
     expiresAt: `ms:${expiresAtMs}`,
     provider,
   };
@@ -170,11 +184,14 @@ function payoutQuote(id: string, req: PayoutQuoteRequest, price: PayoutPrice, so
   let source: CbsMinor;
   let remainder: CbsMinor;
   let gross: CbsMinor;
+  let rate = lotRate(price.lot);
   if (req.side === 'SOURCE_EXACT') {
     const c = exactConvert(req.amount, price.lot, 'FROM_EXACT');
     if (c === null || c.to <= price.fee) return rejected('BELOW_MINIMUM', `${req.amount} does not cover the fee`);
+    const h = honestRate(price.lot, c);
     source = c.from;
-    remainder = c.remainder;
+    remainder = h.remainder;
+    rate = h.rate;
     gross = c.to;
   } else {
     const c = exactConvert(addCbsMinor(req.amount, price.fee), price.lot, 'TO_EXACT');
@@ -184,7 +201,7 @@ function payoutQuote(id: string, req: PayoutQuoteRequest, price: PayoutPrice, so
     gross = c.to;
   }
   const net = req.side === 'SOURCE_EXACT' ? subtractCbsMinor(gross, price.fee) : req.amount;
-  return ok({ payoutQuoteId: id, currency: req.currency, source, sourcePrecision, rate: lotRate(price.lot), remainder, gross, fee: price.fee, net, expiresAtMs }, false);
+  return ok({ payoutQuoteId: id, sourceAsset: req.source, currency: req.currency, source, sourcePrecision, rate, remainder, gross, fee: price.fee, net, expiresAtMs }, false);
 }
 
 export interface LotTablePayoutConfig {

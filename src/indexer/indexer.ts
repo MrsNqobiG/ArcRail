@@ -31,9 +31,11 @@
  * 5. One receipt per transaction from every source; they must agree, be the
  *    receipt of that transaction (its hash and every log's), match the log's
  *    block, have status 1, and contain the credited canonical log itself.
- *    In `confirmTx` only, a receipt missing from a source whose head is still
+ *    In `confirmTx`, a receipt missing from a source whose head is still
  *    below the receipt's block is "not yet confirmed" (OK null), not a
- *    disagreement: that source cannot have it yet.
+ *    disagreement: that source cannot have it yet. In `poll`, every source
+ *    served the log, so a missing receipt is a load-balanced backend that has
+ *    not imported the block (C-42): retried with backoff, then SOURCE_LAGGING.
  * 6. Transfers and the cursor advances are committed atomically per page
  *    (§6.4) into the inbox. Poll returns every committed transfer not yet
  *    acknowledged (`ack`), so a failure after a committed page loses nothing.
@@ -49,17 +51,22 @@
  * the sources move again.
  */
 import type { Hex32 } from '../chain/config/index.js';
-import { checkApprovers } from '../network/types.js';
+import { checkApprovers, pollAddresses } from '../network/types.js';
 import type { AckResult, ConfirmedTransfer, NetworkAddress, NetworkFailure, NetworkHead, NetworkRead, TxConfirmation } from '../network/types.js';
 import type { ArcNetworkParams } from '../network/arc/params.js';
 import { addressTopic, decodeLog, receiptGas, toConfirmedTransfer, unpairedErc20 } from './decode.js';
 import type { CanonicalLog, Erc20Log } from './decode.js';
-import { fetchLogs, pageRange, sourceFailure, withRetry } from './fetch.js';
+import { backoffDelay, fetchLogs, pageRange, sourceFailure, withRetry } from './fetch.js';
 import type { FetchParams } from './fetch.js';
 import type { LogFilter, RawLog, RawReceipt, RpcSource, Timing } from './rpc.js';
 import type { CursorMove, IndexerStore, LivenessState, SourceHeadState } from './store.js';
 
 type Step<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly failure: NetworkFailure };
+
+/** One receipt read across every source (see `readReceipt`). */
+type ReceiptRead =
+  | { readonly kind: 'ALL'; readonly receipt: RawReceipt }
+  | { readonly kind: 'MISSING'; readonly receipt: RawReceipt | null; readonly missing: readonly RpcSource[] };
 
 const STICKY: ReadonlySet<NetworkFailure['kind']> = new Set(['RPC_DISAGREEMENT', 'UNKNOWN_EVENT', 'RANGE_UNRECOVERABLE', 'SOURCE_STOPPED', 'CURSOR_CONFLICT']);
 
@@ -285,11 +292,12 @@ export class ArcIndexer {
   /** Pull and commit every page between each address's cursor and the indexable head; return the unacknowledged inbox. */
   poll(addresses: ReadonlySet<NetworkAddress>): Promise<NetworkRead<readonly ConfirmedTransfer[]>> {
     return this.run(async () => {
+      const ours = pollAddresses(addresses);
+      if ('kind' in ours) return fail(ours);
       const heads = await this.readHeads();
       if (!heads.ok) return heads;
       const dead = this.liveness(heads.value.liveness);
       if (dead !== null) return fail(dead);
-      const ours = [...new Set([...addresses].map((a) => a.toLowerCase() as NetworkAddress))];
       const cursors = new Map<NetworkAddress, bigint | null>();
       for (const a of ours) cursors.set(a, await this.store.loadCursor(this.cursorKeyOf(a)));
       const nextOf = (a: NetworkAddress): bigint => {
@@ -375,9 +383,8 @@ export class ArcIndexer {
     for (const log of canonical) {
       let receipt = receipts.get(log.txHash);
       if (receipt === undefined) {
-        const r = await this.agreedReceipt(log.txHash, null);
+        const r = await this.pollReceipt(log.txHash);
         if (!r.ok) return r;
-        if (r.value === null) return disagree(`log ${log.txHash}:${log.logIndex} has no receipt`);
         receipt = r.value;
         receipts.set(log.txHash, receipt);
       }
@@ -396,12 +403,48 @@ export class ArcIndexer {
   }
 
   /**
-   * The receipt every source returns (null when none has it). Two different
-   * receipts → disagreement. One source having it and another not →
-   * disagreement, unless `heads` is given and every source without it reports
-   * a head below the receipt's block (it cannot have it yet): then null.
+   * Poll path (lensR-1 m1): the receipt of a transaction whose log every
+   * source has just served. A source without it is a load-balanced backend
+   * that has not imported the block yet (C-42, rpc-endpoints.md lines 40,
+   * 119): retry with the -32014 backoff; still missing after the last attempt
+   * → SOURCE_LAGGING (not sticky; nothing is delivered and no cursor moves).
    */
-  private async agreedReceipt(txHash: Hex32, heads: ReadonlyMap<RpcSource, bigint> | null): Promise<Step<RawReceipt | null>> {
+  private async pollReceipt(txHash: Hex32): Promise<Step<RawReceipt>> {
+    const policy = this.params.retry;
+    let missing: readonly RpcSource[] = [];
+    for (let attempt = 0n; attempt < policy.maxAttempts; attempt += 1n) {
+      if (attempt > 0n) await this.timing.sleep(backoffDelay(policy, attempt - 1n, (b) => this.timing.random(b)));
+      const r = await this.readReceipt(txHash);
+      if (!r.ok) return r;
+      if (r.value.kind === 'ALL') return { ok: true, value: r.value.receipt };
+      ({ missing } = r.value);
+    }
+    return fail({ kind: 'SOURCE_LAGGING', source: missing.map((s) => s.name).join(','), detail: `receipt of ${txHash} still missing after ${policy.maxAttempts} attempts` });
+  }
+
+  /**
+   * confirmTx path: the receipt every source returns (null when none has it).
+   * One source having it and another not → disagreement, unless every source
+   * without it reports a head below the receipt's block (it cannot have it
+   * yet): then null.
+   */
+  private async agreedReceipt(txHash: Hex32, heads: ReadonlyMap<RpcSource, bigint>): Promise<Step<RawReceipt | null>> {
+    const r = await this.readReceipt(txHash);
+    if (!r.ok) return r;
+    const read = r.value;
+    if (read.kind === 'ALL') return { ok: true, value: read.receipt };
+    const { receipt, missing } = read;
+    if (receipt === null || missing.every((source) => (heads.get(source) as bigint) < receipt.blockNumber)) return { ok: true, value: null };
+    return disagree(`sources disagree on the receipt of ${txHash}`);
+  }
+
+  /**
+   * One receipt read from every source. Two different receipts →
+   * disagreement. Every source has it → ALL, checked (status 0 or 1, its own
+   * transaction and block); otherwise MISSING with the receipt some source
+   * returned (null when none did) and the sources without it.
+   */
+  private async readReceipt(txHash: Hex32): Promise<Step<ReceiptRead>> {
     let found: { readonly receipt: RawReceipt; readonly print: string } | null = null;
     let missing: readonly RpcSource[] = [];
     for (const source of this.sources) {
@@ -411,12 +454,8 @@ export class ArcIndexer {
       else if (found === null) found = { receipt: r.value, print: receiptFingerprint(r.value) };
       else if (found.print !== receiptFingerprint(r.value)) return disagree(`sources disagree on the receipt of ${txHash}`);
     }
-    if (found === null) return { ok: true, value: null };
+    if (found === null || missing.length > 0) return { ok: true, value: { kind: 'MISSING', receipt: found === null ? null : found.receipt, missing } };
     const { receipt } = found;
-    if (missing.length > 0) {
-      if (heads !== null && missing.every((source) => (heads.get(source) as bigint) < receipt.blockNumber)) return { ok: true, value: null };
-      return disagree(`sources disagree on the receipt of ${txHash}`);
-    }
     if (receipt.status !== 0n && receipt.status !== 1n) {
       return fail({ kind: 'SOURCE_STOPPED', source: 'all', code: null, detail: `receipt status ${receipt.status} is not 0 or 1` });
     }
@@ -424,7 +463,7 @@ export class ArcIndexer {
     const foreign = receipt.transactionHash.toLowerCase() !== txHash
       || receipt.logs.some((l) => l.transactionHash.toLowerCase() !== txHash || l.blockNumber !== receipt.blockNumber || l.blockHash.toLowerCase() !== receipt.blockHash.toLowerCase());
     if (foreign) return fail({ kind: 'SOURCE_STOPPED', source: 'all', code: null, detail: `the receipt returned for ${txHash} belongs to another transaction or block` });
-    return { ok: true, value: receipt };
+    return { ok: true, value: { kind: 'ALL', receipt } };
   }
 
   /**

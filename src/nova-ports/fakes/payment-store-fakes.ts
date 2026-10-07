@@ -531,7 +531,7 @@ function replay(prior: readonly StoreEvent[], rec: PaymentRecord, e: ChangeEvent
   else if (e.type === 'COMPENSATED') v = decideCompensation(rec, rec.version, e.p7, e.original);
   else {
     const partnerCase = foldCases(prior).find((c) => c.caseId === deriveCaseId('PARTNER_RETURN', e.id)) ?? null;
-    v = decideClosePayout(rec, rec.version, e.evidence, e.outbox, inboxIn(prior, e.evidence.dedupeKey), decisionIn(prior, e.evidence.dedupeKey), partnerCase, nothingEnqueued);
+    v = decideClosePayout(rec, rec.version, e.evidence, e.outbox, inboxIn(prior, e.evidence.dedupeKey), decisionIn(prior, e.evidence.dedupeKey), partnerCase, (k) => outboxIn(prior).find((o) => o.key === k) ?? null);
   }
   if (v.kind !== 'APPLY') throw corrupt('stored change no longer applies');
   return v.record;

@@ -20,7 +20,8 @@
  *   module here re-brands a raw arithmetic result (U1 re-brand rule).
  * - `NetworkFailure` adds `SOURCE_STOPPED` (any unknown RPC error: stop, never
  *   "no logs"), `SOURCE_LAGGING` (-32014 or transport retries exhausted, C-42)
- *   and `CURSOR_CONFLICT` (a second writer moved the cursor).
+ *   and `CURSOR_CONFLICT` (a second writer moved the cursor), and
+ *   `INVALID_ADDRESS` (`poll` refuses a malformed address before any read).
  * - `confirmTx` returns a `TxConfirmation`, which also carries a status-0
  *   receipt (a blocklist revert that consumed gas, C-53), so F-3c is visible.
  * - Delivery is through a transactional inbox (CLAUDE.md "Exactly once"):
@@ -56,7 +57,9 @@ export type NetworkFailure =
   | { readonly kind: 'RANGE_UNRECOVERABLE'; readonly source: string; readonly from: bigint; readonly to: bigint }
   | { readonly kind: 'SOURCE_STOPPED'; readonly source: string; readonly code: bigint | null; readonly detail: string }
   | { readonly kind: 'SOURCE_LAGGING'; readonly source: string; readonly detail: string }
-  | { readonly kind: 'CURSOR_CONFLICT'; readonly expected: bigint | null; readonly actual: bigint | null };
+  | { readonly kind: 'CURSOR_CONFLICT'; readonly expected: bigint | null; readonly actual: bigint | null }
+  /** `poll` was given something that is not an address (lensR-1 m6). Not sticky: no source was read and nothing moved. */
+  | { readonly kind: 'INVALID_ADDRESS'; readonly address: string };
 
 export type NetworkFailureKind = NetworkFailure['kind'];
 
@@ -214,6 +217,20 @@ const HASH_RE = /^0x[0-9a-f]{64}$/;
 export function toNetworkAddress(raw: string): NetworkAddress | null {
   const lower = raw.toLowerCase();
   return ADDRESS_RE.test(lower) ? (lower as NetworkAddress) : null;
+}
+
+/**
+ * `poll` input check, shared by every adapter (lensR-1 m6): the addresses
+ * lower-cased, or INVALID_ADDRESS for the first one that is not an address.
+ */
+export function pollAddresses(addresses: ReadonlySet<NetworkAddress>): readonly NetworkAddress[] | NetworkFailure {
+  let out: readonly NetworkAddress[] = [];
+  for (const raw of addresses) {
+    const a = toNetworkAddress(raw);
+    if (a === null) return { kind: 'INVALID_ADDRESS', address: raw };
+    if (!out.includes(a)) out = [...out, a];
+  }
+  return out;
 }
 
 /** A 32-byte hex hash, lower-cased; null for anything else. */

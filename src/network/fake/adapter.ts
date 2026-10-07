@@ -18,7 +18,7 @@
 import { createHash } from 'node:crypto';
 import { cbsMinorToNativeWei, nativeWei } from '../../amounts/index.js';
 import type { CbsMinor, CbsPrecision, NativeWei } from '../../amounts/index.js';
-import { checkApprovers, checkExternalId, dfnsAmount, toNetworkAddress, transferDedupeKey } from '../types.js';
+import { checkApprovers, checkExternalId, dfnsAmount, pollAddresses, toNetworkAddress, transferDedupeKey } from '../types.js';
 import type {
   AckResult,
   ConfirmedTransfer,
@@ -215,8 +215,9 @@ export class FakeNetAdapter implements NetworkAdapter {
   async poll(addresses: ReadonlySet<NetworkAddress>): Promise<NetworkRead<readonly ConfirmedTransfer[]>> {
     const failed = this.failure();
     if (failed !== null) return failed;
+    const set = pollAddresses(addresses);
+    if ('kind' in set) return { kind: 'FAILED', failure: set };
     const l = this.ledger;
-    const set = [...addresses];
     // What this poll read; every commit compares the stored cursors with it (compare-and-set).
     const expected = new Map(set.map((a) => [a, l.cursors.get(a) ?? 0n]));
     const coversOf = (e: Entry): readonly NetworkAddress[] => set.filter((a) => (expected.get(a) as bigint) < e.seq);

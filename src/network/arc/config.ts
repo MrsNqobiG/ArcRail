@@ -36,7 +36,10 @@ export const PROPOSED_RETRY: RetryPolicy = Object.freeze({ initialMs: 250n, capM
 
 /**
  * Proposed head-regression tolerance (blocks): a load-balanced backend a few
- * blocks behind (C-42) is not a failure. Ours, not Arc's (Q-N6 family).
+ * blocks behind (C-42) is not a failure. Ours, not Arc's (Q-N6 family). Only
+ * a proposal: the loader has no default (lensR-1 m5), because the value sets
+ * how far a source may go backwards before it is stopped, an operator decision
+ * like `stallAfterMs`. The operator passes it explicitly.
  */
 export const PROPOSED_HEAD_REGRESSION_TOLERANCE_BLOCKS = 5n;
 
@@ -51,7 +54,8 @@ export interface ArcConfigInput {
   readonly blocklistMaxAgeMs: bigint;
   readonly confirmations?: bigint;
   readonly retry?: RetryPolicy;
-  readonly headRegressionToleranceBlocks?: bigint;
+  /** Required, no default (lensR-1 m5); `PROPOSED_HEAD_REGRESSION_TOLERANCE_BLOCKS` is the proposal. */
+  readonly headRegressionToleranceBlocks: bigint;
   /** Test fixtures only; production uses U2's default gates file. */
   readonly gatesFile?: string | URL;
 }
@@ -92,7 +96,8 @@ export function loadArcNetworkParams(input: ArcConfigInput): ArcNetworkParams {
   const confirmations = input.confirmations ?? 0n;
   if (confirmations < 0n) throw new ArcConfigError('confirmations must not be negative');
   if (input.startBlock < 0n) throw new ArcConfigError('startBlock must not be negative');
-  const headRegressionToleranceBlocks = input.headRegressionToleranceBlocks ?? PROPOSED_HEAD_REGRESSION_TOLERANCE_BLOCKS;
+  const { headRegressionToleranceBlocks } = input;
+  if (typeof headRegressionToleranceBlocks !== 'bigint') throw new ArcConfigError('headRegressionToleranceBlocks is required (no default)');
   if (headRegressionToleranceBlocks < 0n) throw new ArcConfigError('headRegressionToleranceBlocks must not be negative');
   // U2 values are fixed, cited constants; the indexer compares lower-case hex.
   const topic0 = chain.transferTopic0.toLowerCase() as Hex32;

@@ -125,6 +125,7 @@ function arcHarness(): Harness {
     stallAfterMs: 30_000n,
     startBlock: 1n,
     blocklistMaxAgeMs: 60_000n,
+    headRegressionToleranceBlocks: 5n,
   });
   const ownChain = new InMemoryArcChain('own-node');
   const refChain = new InMemoryArcChain('reference');
@@ -246,6 +247,20 @@ describe.each([
     expect(await h.adapter.ack([(first.value[0] as ConfirmedTransfer).dedupeKey])).toEqual({ kind: 'ACKED' });
     expect(await h.adapter.poll(new Set([ours]))).toEqual({ kind: 'OK', value: [] });
     expect(await h.adapter.pending()).toEqual([]);
+  });
+
+  it('poll refuses a malformed address before any read (INVALID_ADDRESS, not sticky) and lower-cases a valid one (lensR-1 m6)', async () => {
+    const h = make();
+    const txHash = h.settle(ours, theirs, ONE_USDC);
+    const bad = '0x1234' as NetworkAddress;
+    const refused = { kind: 'FAILED', failure: { kind: 'INVALID_ADDRESS', address: '0x1234' } };
+    expect(await h.adapter.poll(new Set([ours, bad]))).toEqual(refused);
+    expect(await h.adapter.poll(new Set([`0x${'g'.repeat(40)}` as NetworkAddress]))).toEqual({ kind: 'FAILED', failure: { kind: 'INVALID_ADDRESS', address: `0x${'g'.repeat(40)}` } });
+    expect(await h.adapter.pending()).toEqual([]);
+    const upper = `0x${ours.slice(2).toUpperCase()}` as NetworkAddress;
+    const r = await h.adapter.poll(new Set([upper, ours]));
+    expect(keysOf(r)).toEqual([txHash]);
+    expect(r.kind === 'OK' && r.value[0]).toMatchObject({ to: theirs, from: ours });
   });
 
   it('ack is all or nothing: an unknown key acknowledges none', async () => {

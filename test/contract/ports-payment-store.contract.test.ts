@@ -162,8 +162,8 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
     it('same request key with a different request, or a reused payment id, is KEY_CONFLICT', async () => {
       const s = make();
       await s.create(newPayment());
-      expect(await s.create(newPayment({ requestDigest: hex('d2') }))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: /reused with a different request/ });
-      expect(await s.create(newPayment({ paymentId: PID2 }))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: /reused with a different request/ });
+      expect(await s.create(newPayment({ requestDigest: hex('d2') }))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: expect.stringMatching(/reused with a different request/) });
+      expect(await s.create(newPayment({ paymentId: PID2 }))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: expect.stringMatching(/reused with a different request/) });
       expect(await s.create(newPayment({ requestKey: idempotencyKey('req-other') }))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: `payment id ${PID} already used by another request` });
       expect(await s.get(PID2)).toMatchObject({ kind: 'REJECTED', code: 'NOT_FOUND' });
     });
@@ -180,7 +180,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
 
     it('legs must be exactly the journey for (payer choice, receiver choice): INVALID_JOURNEY', async () => {
       const s = make();
-      expect(await s.create(newPayment({ legs: ['ARC_TRANSFER'] }))).toMatchObject({ kind: 'REJECTED', code: 'INVALID_JOURNEY', detail: /RESERVE,ARC_TRANSFER/ });
+      expect(await s.create(newPayment({ legs: ['ARC_TRANSFER'] }))).toMatchObject({ kind: 'REJECTED', code: 'INVALID_JOURNEY', detail: expect.stringMatching(/RESERVE,ARC_TRANSFER/) });
       const fiatToBank = newPayment({ payIn: { method: 'FIAT', currency: fiatCode('ZAR') }, payout: FIAT_BANK, legs: ['RESERVE', 'CONVERT_IN', 'ARC_TRANSFER', 'PAYOUT'] });
       expect(okValue(await s.create(fiatToBank)).legs.map((l) => l.kind)).toEqual(['RESERVE', 'CONVERT_IN', 'ARC_TRANSFER', 'PAYOUT']);
     });
@@ -202,7 +202,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
     it('needs the reservation first; then commits once; an equal marker replays, another conflicts', async () => {
       const s = make();
       let r = okValue(await s.create(newPayment()));
-      expect(await s.markSubmit(PID, r.version, marker())).toMatchObject({ kind: 'REJECTED', code: 'NOT_READY', detail: /ahead of the Arc leg/ });
+      expect(await s.markSubmit(PID, r.version, marker())).toMatchObject({ kind: 'REJECTED', code: 'NOT_READY', detail: expect.stringMatching(/ahead of the Arc leg/) });
       r = okValue(await s.applySignal(PID, r.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).record;
       expect(await s.markSubmit(PID, 99n, marker())).toMatchObject({ kind: 'REJECTED', code: 'VERSION_CONFLICT', detail: `at version ${r.version}` });
       const m = okValue(await s.markSubmit(PID, r.version, marker()));
@@ -212,9 +212,16 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(await s.get(PID)).toEqual({ kind: 'OK', value: m, replayed: false });
       expect(await s.markSubmit(PID, r.version, marker())).toEqual({ kind: 'OK', value: m, replayed: true });
       for (const other of [marker({ bodyDigest: hex('be') }), marker({ externalId: 'nv1-' + 'cd'.repeat(20) }), marker({ markedAt: 'x' }), marker({ markedAtBlock: 101n })]) {
-        expect(await s.markSubmit(PID, m.version, other)).toMatchObject({ kind: 'REJECTED', code: 'MARKER_CONFLICT', detail: /already set/ });
+        expect(await s.markSubmit(PID, m.version, other)).toMatchObject({ kind: 'REJECTED', code: 'MARKER_CONFLICT', detail: expect.stringMatching(/already set/) });
       }
       expect(await s.markSubmit(PID2, 1n, marker())).toMatchObject({ kind: 'REJECTED', code: 'NOT_FOUND' });
+    });
+
+    it('a marker at block 0 is valid (the block is non-negative, not positive)', async () => {
+      const s = make();
+      let r = okValue(await s.create(newPayment()));
+      r = okValue(await s.applySignal(PID, r.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).record;
+      expect(okValue(await s.markSubmit(PID, r.version, marker({ markedAtBlock: 0n }))).legs[1]?.submit).toEqual(marker({ markedAtBlock: 0n }));
     });
 
     it('a malformed marker is a programming error (throws): markers are derived (§10.2)', async () => {
@@ -236,7 +243,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(await s.markSubmit(PID, r.version, marker())).toMatchObject({ kind: 'REJECTED', code: 'LEG_TERMINAL', detail: 'payment REJECTED, P6 enqueued' });
       const s2 = make();
       let q = okValue(await s2.create(newPayment()));
-      expect(await s2.applySignal(PID, q.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /P6 refused: the payment is PENDING/ });
+      expect(await s2.applySignal(PID, q.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/P6 refused: the payment is PENDING/) });
       q = okValue(await s2.applySignal(PID, q.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).record;
       expect(okValue(await s2.markSubmit(PID, q.version, marker())).legs[1]?.submit).toEqual(marker());
       const s3 = make();
@@ -343,7 +350,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const s = make();
       const r = await pending(s);
       for (const stage of ['SUBMITTED', 'CONFIRMING'] as const) {
-        expect(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st(stage)), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /without a DFNS-reported hash/ });
+        expect(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st(stage)), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/without a DFNS-reported hash/) });
       }
       expect(okValue(await s.get(PID)).legs[1]?.stage).toBe('PENDING_APPROVAL');
     });
@@ -360,12 +367,12 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(await s2.applySignal(PID, q.version, sig('INTERNAL'), to('ARC_TRANSFER', { stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK' }, { txHash: TX }), [])).toMatchObject({
         kind: 'REJECTED',
         code: 'ILLEGAL_TRANSITION',
-        detail: /only DFNS or a two-person link sets the Arc leg txHash/,
+        detail: expect.stringMatching(/only DFNS or a two-person link sets the Arc leg txHash/),
       });
       expect(await s2.applySignal(PID, q.version, sig('INTERNAL'), to('ARC_TRANSFER', { stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK' }, { externalRef: 'tr-x' }), [])).toMatchObject({
         kind: 'REJECTED',
         code: 'ILLEGAL_TRANSITION',
-        detail: /only a DFNS signal identifies the DFNS transfer/,
+        detail: expect.stringMatching(/only a DFNS signal identifies the DFNS transfer/),
       });
       expect(okValue(await s.get(PID)).legs[1]?.txHash).toBeNull();
     });
@@ -390,7 +397,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const link = await decide(s2, 'LINK_HASH');
       q = okValue(await s2.applySignal(PID, q.version, opSig(link), to('ARC_TRANSFER', st('CONFIRMING'), { txHash: TX }), [])).record;
       expect(q.legs[1]).toMatchObject({ stage: 'CONFIRMING', txHash: TX });
-      expect(await s2.applySignal(PID, q.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /only with the hash of its transaction/ });
+      expect(await s2.applySignal(PID, q.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/only with the hash of its transaction/) });
       expect(okValue(await s2.applySignal(PID, q.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED'), { txHash: TX }), [])).record.status).toBe('SETTLED');
     });
 
@@ -417,10 +424,10 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(r1.outcome).toBe('APPLIED');
       expect(await s.applySignal(PID, r0.version, once, to('RESERVE', st('COMPLETED')), [outbox('o:1')])).toEqual({ kind: 'OK', value: { outcome: 'DUPLICATE', record: r1.record }, replayed: true });
       // B2: a re-delivery never enqueues something new behind a false OK.
-      expect(await s.applySignal(PID, r0.version, once, to('RESERVE', st('COMPLETED')), [outbox('o:2')])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /enqueues nothing; o:2 is not already enqueued/ });
+      expect(await s.applySignal(PID, r0.version, once, to('RESERVE', st('COMPLETED')), [outbox('o:2')])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/enqueues nothing; o:2 is not already enqueued/) });
       expect(await s.applySignal(PID, r0.version, once, to('RESERVE', st('COMPLETED')), [{ ...outbox('o:1'), payload: 'other' }])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION' });
       expect(await s.applySignal(PID, r0.version, once, to('RESERVE', st('COMPLETED')), [{ ...outbox('o:1'), topic: 'other' }])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION' });
-      expect(await s.applySignal(PID, r1.record.version, { ...once, payloadDigest: hex('ff') }, to('RESERVE', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /ledger:pay:p1/ });
+      expect(await s.applySignal(PID, r1.record.version, { ...once, payloadDigest: hex('ff') }, to('RESERVE', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/ledger:pay:p1/) });
       expect(okValue(await s.pendingOutbox()).map((o) => o.key)).toEqual(['o:1']);
     });
 
@@ -430,7 +437,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       okValue(await s.create(newPayment({ paymentId: PID2, requestKey: idempotencyKey('req-two') })));
       const k = sig('LEDGER', 'ledger:shared');
       okValue(await s.applySignal(PID, 1n, k, to('RESERVE', st('COMPLETED')), []));
-      expect(await s.applySignal(PID2, 1n, k, to('RESERVE', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /already applied to another payment/ });
+      expect(await s.applySignal(PID2, 1n, k, to('RESERVE', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/already applied to another payment/) });
       expect(okValue(await s.get(PID2)).legs[0]?.stage).toBe('CREATED');
     });
 
@@ -459,7 +466,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const r = await toSubmitted(s);
       const late = sig('DFNS_POLL', 'dfns:transfer:tr-1:Pending');
       // B2: a no-change signal cannot carry a new outbox item (it would be dropped behind an OK).
-      expect(await s.applySignal(PID, r.version, late, to('ARC_TRANSFER', st('PENDING_APPROVAL')), [outbox('o:stale')])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /changes nothing enqueues nothing/ });
+      expect(await s.applySignal(PID, r.version, late, to('ARC_TRANSFER', st('PENDING_APPROVAL')), [outbox('o:stale')])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/changes nothing enqueues nothing/) });
       expect(await s.applySignal(PID, r.version, late, to('ARC_TRANSFER', st('PENDING_APPROVAL')), [])).toEqual({ kind: 'OK', value: { outcome: 'STALE', record: r }, replayed: false });
       expect(okValue(await s.get(PID)).version).toBe(r.version);
       // A no-change signal records only its digest: re-delivered it is STALE again, and another payload under its key conflicts.
@@ -542,7 +549,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const failed = okValue(await s.applySignal(PID, r.version, sig('INTERNAL'), to('ARC_TRANSFER', { stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK' }), []));
       expect(failed.record).toMatchObject({ stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK', status: 'FAILED' });
       expect(failed.record.legs[0]?.stage).toBe('CREATED');
-      expect(await s.applySignal(PID, failed.record.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /nothing changes after a failure/ });
+      expect(await s.applySignal(PID, failed.record.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/nothing changes after a failure/) });
     });
 
     it('fiat payout (receiver\'s choice): a PAYOUT failure while the Arc leg moves money is refused (probe P3)', async () => {
@@ -553,10 +560,10 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
         ['OPERATOR_DECISION', { stage: 'CANCELLED', reason: 'CANCELLED_BY_OPERATOR' }],
         ['INTERNAL', { stage: 'REJECTED', reason: 'METHOD_NOT_ENABLED' }],
       ] as const) {
-        expect(await s.applySignal(PID, r.version, sig(src), to('PAYOUT', state), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /PAYOUT cannot fail while a leg ahead of it is not completed/ });
+        expect(await s.applySignal(PID, r.version, sig(src), to('PAYOUT', state), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/PAYOUT cannot fail while a leg ahead of it is not completed/) });
       }
       expect(okValue(await s.pendingOutbox())).toEqual([]);
-      expect(await s.applySignal(PID, r.version, sig('PAYOUT_CALLBACK'), to('PAYOUT', st('SUBMITTED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /PAYOUT cannot progress while a leg ahead/ });
+      expect(await s.applySignal(PID, r.version, sig('PAYOUT_CALLBACK'), to('PAYOUT', st('SUBMITTED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/PAYOUT cannot progress while a leg ahead/) });
       r = okValue(await s.applySignal(PID, r.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED'), { txHash: TX }), [])).record;
       expect(r).toMatchObject({ stage: 'CREATED', status: 'PENDING' });
       expect(r.legs.map((l) => l.stage)).toEqual(['COMPLETED', 'COMPLETED', 'CREATED']);
@@ -655,7 +662,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const s = make();
       const r = await settled(s);
       const no = async (p7: JournalReceipt, original: JournalReceipt): Promise<void> => {
-        expect(await s.recordCompensation(PID, r.version, p7, original)).toMatchObject({ kind: 'REJECTED', code: 'NOT_COMPENSATION', detail: /P7 receipt compensating this payment's P2 or P2I/ });
+        expect(await s.recordCompensation(PID, r.version, p7, original)).toMatchObject({ kind: 'REJECTED', code: 'NOT_COMPENSATION', detail: expect.stringMatching(/P7 receipt compensating this payment's P2 or P2I/) });
       };
       await no({ ...P7, template: 'P6_RELEASE' }, P2);
       await no({ ...P7, refs: { ...P7.refs, paymentId: PID2 } }, P2);
@@ -668,6 +675,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       await no({ ...P7, key: idempotencyKey(`pay:${PID}:p7f`) }, P2);
       await no(P7, { ...P2, key: idempotencyKey(`pay:${PID}:p2i`) });
       await no(P7, { ...P2, key: idempotencyKey(`pay:${PID2}:p2`) });
+      await no({ ...P7, refs: { ...P7.refs, compensates: 'jr-p1' } }, receipt({ journalId: 'jr-p1', key: idempotencyKey(`pay:${PID}:undefined`), template: 'P1_RESERVE' }));
       expect(await s.recordCompensation(PID, 99n, P7, P2)).toMatchObject({ kind: 'REJECTED', code: 'VERSION_CONFLICT', detail: `at version ${r.version}` });
       expect(await s.recordCompensation(PID2, 1n, P7, P2)).toMatchObject({ kind: 'REJECTED', code: 'NOT_FOUND' });
       expect(okValue(await s.get(PID)).status).toBe('SETTLED');
@@ -744,13 +752,17 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(okValue(await s.create(newPayment()), true).paymentId).toBe(PID);
       okValue(await s.pause('CHAIN_STALL', 'monitor'));
       expect(okValue(await s.getRailState())).toEqual({ paused: true, reason: 'RPC_DISAGREEMENT (by indexer)', incident: 'pause-1' });
-      expect(await s.unpause(decision({ approvers: ['ann', 'ann'] }))).toMatchObject({ kind: 'REJECTED', code: 'SAME_APPROVER', detail: /two distinct approvers/ });
+      expect(await s.unpause(decision({ approvers: ['ann', 'ann'] }))).toMatchObject({ kind: 'REJECTED', code: 'SAME_APPROVER', detail: expect.stringMatching(/two distinct approvers/) });
       expect(await s.unpause(decision({ approvers: ['ann', ''] }))).toMatchObject({ kind: 'REJECTED', code: 'APPROVER_UNAUTHENTICATED' });
       expect(await s.unpause(decision({ approvers: ['', 'bob'] }))).toMatchObject({ kind: 'REJECTED', code: 'APPROVER_UNAUTHENTICATED' });
       // m3: canonical ids: case and NFKC forms of one id are one person; whitespace is never an id.
       expect(await s.unpause(decision({ approvers: ['ann', 'ANN'] }))).toMatchObject({ kind: 'REJECTED', code: 'SAME_APPROVER' });
-      expect(await s.unpause(decision({ approvers: ['\uFF41nn', 'ann'] }))).toMatchObject({ kind: 'REJECTED', code: 'SAME_APPROVER' });
-      expect(await s.unpause(decision({ approvers: [' ', 'bob'] }))).toMatchObject({ kind: 'REJECTED', code: 'APPROVER_UNAUTHENTICATED', detail: /no whitespace/ });
+      // m5: ids are ASCII staff ids, so look-alikes (full-width, sharp s, zero-width, soft hyphen) are refused, never recorded as a second person.
+      for (const odd of ['stra\u00DFe', '\uFF41nn', 'ann\u200B', 'a\u00ADnn', 'ann\u2028', 'ann/']) {
+        expect(await s.unpause(decision({ approvers: [odd, 'bob'] }))).toMatchObject({ kind: 'REJECTED', code: 'APPROVER_UNAUTHENTICATED' });
+        expect(await s.unpause(decision({ approvers: ['bob', odd] }))).toMatchObject({ kind: 'REJECTED', code: 'APPROVER_UNAUTHENTICATED' });
+      }
+      expect(await s.unpause(decision({ approvers: [' ', 'bob'] }))).toMatchObject({ kind: 'REJECTED', code: 'APPROVER_UNAUTHENTICATED', detail: expect.stringMatching(/ASCII letters/) });
       expect(await s.unpause(decision({ approvers: ['ann', 'bob '] }))).toMatchObject({ kind: 'REJECTED', code: 'APPROVER_UNAUTHENTICATED' });
       const lift = decision({ kind: 'LIFT_QUARANTINE' });
       expect(await s.unpause(lift)).toMatchObject({ kind: 'REJECTED', code: 'WRONG_KIND', detail: `decision ${lift.decisionId} is LIFT_QUARANTINE` });
@@ -759,7 +771,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const other = await decide(s, 'UNPAUSE', 'rail');
       expect(await s.unpause(other)).toMatchObject({ kind: 'REJECTED', code: 'WRONG_INCIDENT', detail: `decision ${other.decisionId} is for rail; the pause in force is pause-1` });
       const d1 = await decide(s, 'UNPAUSE', 'pause-1');
-      expect(await s.unpause({ ...d1, evidenceDigest: hex('ef') })).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /differs from the recorded one/ });
+      expect(await s.unpause({ ...d1, evidenceDigest: hex('ef') })).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/differs from the recorded one/) });
       expect(okValue(await s.getRailState()).paused).toBe(true);
       okValue(await s.unpause(d1));
       expect(okValue(await s.getRailState())).toEqual({ paused: false, reason: null, incident: null });
@@ -807,7 +819,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const s = make();
       const d = decision({ kind: 'LINK_HASH', subject: PID });
       const no = async (sg: InboundSignal, x: OperatorDecision, code: string, detail: RegExp): Promise<void> => {
-        expect(await s.recordDecision(sg, x)).toMatchObject({ kind: 'REJECTED', code, detail });
+        expect(await s.recordDecision(sg, x)).toMatchObject({ kind: 'REJECTED', code, detail: expect.stringMatching(detail) });
       };
       await no(opSig(d), { ...d, approvers: ['ann', 'ann'] }, 'SAME_APPROVER', /two distinct approvers/);
       await no(opSig(d), { ...d, approvers: ['', 'bob'] }, 'APPROVER_UNAUTHENTICATED', /authenticated/);
@@ -831,16 +843,16 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       r = okValue(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('APPROVED')), [])).record;
       const fail = to('ARC_TRANSFER', { stage: 'REJECTED', reason: 'DFNS_FAILED' });
       const unrecorded = decision({ kind: 'NONCE_TX_LOCATED', subject: PID });
-      expect(await s.applySignal(PID, r.version, opSig(unrecorded), fail, [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /no recorded two-person decision/ });
-      expect(await s.applySignal(PID, r.version, sig('OPERATOR_DECISION', 'op:anything'), to('ARC_TRANSFER', st('CONFIRMING'), { txHash: hex('66') }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /no recorded/ });
+      expect(await s.applySignal(PID, r.version, opSig(unrecorded), fail, [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/no recorded two-person decision/) });
+      expect(await s.applySignal(PID, r.version, sig('OPERATOR_DECISION', 'op:anything'), to('ARC_TRANSFER', st('CONFIRMING'), { txHash: hex('66') }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/no recorded/) });
       const other = await decide(s, 'NONCE_TX_LOCATED', PID2);
-      expect(await s.applySignal(PID, r.version, opSig(other), fail, [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /is for pay-0202/ });
+      expect(await s.applySignal(PID, r.version, opSig(other), fail, [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/is for pay-0202/) });
       const link = await decide(s, 'LINK_HASH');
-      expect(await s.applySignal(PID, r.version, opSig(link), fail, [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /is LINK_HASH; this transition needs NONCE_TX_LOCATED/ });
+      expect(await s.applySignal(PID, r.version, opSig(link), fail, [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/is LINK_HASH; this transition needs NONCE_TX_LOCATED/) });
       const abort = await decide(s, 'ABORT_ACCEPTED');
-      expect(await s.applySignal(PID, r.version, opSig(abort), to('ARC_TRANSFER', st('CONFIRMING'), { txHash: hex('66') }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /needs LINK_HASH/ });
+      expect(await s.applySignal(PID, r.version, opSig(abort), to('ARC_TRANSFER', st('CONFIRMING'), { txHash: hex('66') }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/needs LINK_HASH/) });
       const unpause = await decide(s, 'UNPAUSE', PID);
-      expect(await s.applySignal(PID, r.version, opSig(unpause), to('ARC_TRANSFER', { stage: 'CANCELLED', reason: 'CANCELLED_BY_OPERATOR' }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /needs ABORT_ACCEPTED/ });
+      expect(await s.applySignal(PID, r.version, opSig(unpause), to('ARC_TRANSFER', { stage: 'CANCELLED', reason: 'CANCELLED_BY_OPERATOR' }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/needs ABORT_ACCEPTED/) });
       expect(okValue(await s.get(PID))).toMatchObject({ version: r.version, status: 'PROCESSING' });
       expect(okValue(await s.pendingOutbox())).toEqual([]);
       const proofC = await decide(s, 'NONCE_TX_LOCATED');
@@ -864,7 +876,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const d = await decide(s, 'ABORT_ACCEPTED');
       const cancel = to('ARC_TRANSFER', { stage: 'CANCELLED', reason: 'CANCELLED_BY_OPERATOR' });
       expect(okValue(await s.applySignal(PID, 1n, opSig(d), cancel, [])).record.status).toBe('FAILED');
-      expect(await s.applySignal(PID2, 1n, opSig(d), cancel, [])).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /already applied to another payment/ });
+      expect(await s.applySignal(PID2, 1n, opSig(d), cancel, [])).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/already applied to another payment/) });
     });
 
     it('F-18: a two-person LINK_HASH replaces a speed-up hash; the leg then completes only in the linked transaction (m3a)', async () => {
@@ -892,7 +904,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('PENDING_APPROVAL'), { externalRef: 'tr-1' }), [outbox(releaseKey(PID))])).toMatchObject({
         kind: 'REJECTED',
         code: 'LEG_UNRESOLVED',
-        detail: /P6 refused/,
+        detail: expect.stringMatching(/P6 refused/),
       });
       expect(okValue(await s.pendingOutbox())).toEqual([]);
       const q = okValue(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('PENDING_APPROVAL'), { externalRef: 'tr-1' }), [])).record;
@@ -903,11 +915,11 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const s = make();
       const r = await pending(s);
       const p6 = [outbox('o:x'), outbox(releaseKey(PID))];
-      expect(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('APPROVED')), p6)).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /P6 refused: the payment is PROCESSING/ });
-      expect(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('CREATED')), p6)).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /changes nothing enqueues nothing/ });
+      expect(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('APPROVED')), p6)).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/P6 refused: the payment is PROCESSING/) });
+      expect(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('CREATED')), p6)).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/changes nothing enqueues nothing/) });
       const s3 = make();
       const q = await toSubmitted(s3);
-      expect(await s3.applySignal(PID, q.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED'), { txHash: TX }), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /the payment is SETTLED/ });
+      expect(await s3.applySignal(PID, q.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED'), { txHash: TX }), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/the payment is SETTLED/) });
       expect(okValue(await s.pendingOutbox())).toEqual([]);
       expect(okValue(await s3.pendingOutbox())).toEqual([]);
     });
@@ -932,7 +944,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(okValue(await s.applySignal(PID, a.version, log, to('RESERVE', st('CONFIRMING')), [])).outcome).toBe('STALE');
       expect(okValue(await s.applySignal(PID2, b.version, log, to('ARC_TRANSFER', st('COMPLETED'), { txHash: hex('7b') }), [])).record.status).toBe('SETTLED');
       expect(okValue(await s.applySignal(PID2, b.version, log, to('ARC_TRANSFER', st('COMPLETED'), { txHash: hex('7b') }), []), true).outcome).toBe('DUPLICATE');
-      expect(await s.applySignal(PID, a.version, log, to('RESERVE', st('CONFIRMING')), [])).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /already applied to another payment/ });
+      expect(await s.applySignal(PID, a.version, log, to('RESERVE', st('CONFIRMING')), [])).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/already applied to another payment/) });
     });
 
     it('S4: a state-level DUPLICATE (terminal leg, fresh key) does not claim the key either', async () => {
@@ -987,7 +999,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const s = make();
       const r = await approved(s);
       const no = async (src: SignalSource, t: LegTransition, detail: RegExp): Promise<void> => {
-        expect(await s.applySignal(PID, r.version, sig(src), t, [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail });
+        expect(await s.applySignal(PID, r.version, sig(src), t, [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(detail) });
       };
       const stay = (h: NewNonceHold): LegTransition => to('ARC_TRANSFER', st('APPROVED'), { placeHold: h });
       await no('DFNS_POLL', stay(hold({ wallet: walletRef('w-other') })), /names this payment and its sending wallet/);
@@ -1001,7 +1013,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(await s.applySignal(PID, r.version, opSig(unrecorded), stay(hold()), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION' });
       const sub = make();
       const q = await toSubmitted(sub);
-      expect(await sub.applySignal(PID, q.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('SUBMITTED'), { placeHold: hold() }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /no txHash/ });
+      expect(await sub.applySignal(PID, q.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('SUBMITTED'), { placeHold: hold() }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/no txHash/) });
       const m = make();
       const u = await marked(m);
       expect(await m.applySignal(PID, u.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('CREATED'), { placeHold: hold() }), [])).toMatchObject({ kind: 'REJECTED', code: 'LEG_UNRESOLVED' });
@@ -1023,10 +1035,10 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(okValue(await s.recordHoldObservation(id, { block: 140n, accountNonce: 9n }))).toMatchObject({ firstAbove: { block: 130n, accountNonce: 8n } });
       expect(okValue(await s.recordHoldObservation(id, { block: 120n, accountNonce: 8n }))).toMatchObject({ lastAtOrBelow: { block: 110n }, firstAbove: { block: 120n } });
       // m1: the account nonce passing n is not enough; the nonce-n transaction must be located first (F-3b step 4a).
-      expect(await s.liftHold(id, ev)).toMatchObject({ kind: 'REJECTED', code: 'HOLD_NOT_RESOLVED', detail: /nonce-7 transaction is not located/ });
+      expect(await s.liftHold(id, ev)).toMatchObject({ kind: 'REJECTED', code: 'HOLD_NOT_RESOLVED', detail: expect.stringMatching(/nonce-7 transaction is not located/) });
       expect(okValue(await s.recordHoldNonceTx(id, hex('5a')))).toMatchObject({ nonceTx: hex('5a') });
       for (const src of ['DFNS_WEBHOOK', 'DFNS_POLL', 'LEDGER', 'CONVERSION', 'PAYOUT_CALLBACK'] as const) {
-        expect(await s.liftHold(id, sig(src, `lift:${src}`)), src).toMatchObject({ kind: 'REJECTED', code: 'HOLD_NOT_RESOLVED', detail: /cannot lift a hold/ });
+        expect(await s.liftHold(id, sig(src, `lift:${src}`)), src).toMatchObject({ kind: 'REJECTED', code: 'HOLD_NOT_RESOLVED', detail: expect.stringMatching(/cannot lift a hold/) });
       }
       expect(okValue(await s.listActiveHolds(HOT))).toHaveLength(1);
       expect(await s.recordHoldNonceTx(id, hex('5a'))).toMatchObject({ kind: 'OK', replayed: true, value: { nonceTx: hex('5a') } });
@@ -1046,7 +1058,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       okValue(await s.applySignal(PID, r.version, sig('DFNS_WEBHOOK', failed), to('ARC_TRANSFER', st('APPROVED'), { placeHold: hold({ nonce: null }) }), []));
       const id = deriveHoldId(HOT, 'tr-01');
       expect(okValue(await s.recordHoldObservation(id, { block: 1n, accountNonce: 99n }))).toMatchObject({ lastAtOrBelow: null, firstAbove: null });
-      expect(await s.liftHold(id, sig('INTERNAL', 'x:1'))).toMatchObject({ kind: 'REJECTED', code: 'HOLD_NOT_RESOLVED', detail: /NONCE_UNKNOWN_CLOSE/ });
+      expect(await s.liftHold(id, sig('INTERNAL', 'x:1'))).toMatchObject({ kind: 'REJECTED', code: 'HOLD_NOT_RESOLVED', detail: expect.stringMatching(/NONCE_UNKNOWN_CLOSE/) });
       const forPayment = await decide(s, 'NONCE_UNKNOWN_CLOSE', PID);
       expect(await s.liftHold(id, opSig(forPayment))).toMatchObject({ kind: 'REJECTED', code: 'HOLD_NOT_RESOLVED' });
       const wrongKind = await decide(s, 'NONCE_TX_LOCATED', id);
@@ -1055,7 +1067,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const close = await decide(s, 'NONCE_UNKNOWN_CLOSE', id);
       // S713b: the recorded decision's own key, offered from any source but OPERATOR_DECISION, lifts nothing.
       expect(await s.liftHold(id, { ...opSig(close), source: 'INTERNAL' })).toMatchObject({ kind: 'REJECTED', code: 'HOLD_NOT_RESOLVED' });
-      expect(await s.liftHold(id, opSig(close, hex('d0')))).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /different payload/ });
+      expect(await s.liftHold(id, opSig(close, hex('d0')))).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/different payload/) });
       expect(okValue(await s.liftHold(id, opSig(close)))).toMatchObject({ state: 'LIFTED', liftedBy: decisionKey(close.decisionId) });
       expect(okValue(await s.listActiveHolds(HOT))).toEqual([]);
       // A key already applied to a payment cannot lift a hold.
@@ -1063,7 +1075,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const q = await approved(s2);
       okValue(await s2.applySignal(PID, q.version, sig('DFNS_WEBHOOK', failed), to('ARC_TRANSFER', st('APPROVED'), { placeHold: hold() }), []));
       okValue(await s2.recordHoldObservation(id, { block: 5n, accountNonce: 8n }));
-      expect(await s2.liftHold(id, sig('DFNS_WEBHOOK', failed))).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /already applied to pay-/ });
+      expect(await s2.liftHold(id, sig('DFNS_WEBHOOK', failed))).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/already applied to pay-/) });
       expect(okValue(await s2.listActiveHolds(HOT))).toHaveLength(1);
     });
 
@@ -1185,6 +1197,14 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       return okValue(await s.putCase(partnerCase({ decisions: [open.decisionId] })));
     }
 
+    it('R1 (deposit journey): a completed leg ahead is not a reservation; only a COMPLETED RESERVE is', async () => {
+      const s = make();
+      let r = okValue(await s.create(newPayment({ payIn: { method: 'STABLECOIN_DEPOSIT', asset: 'USDC', network: 'ARC' }, legs: ['AWAIT_DEPOSIT', 'RESERVE', 'ARC_TRANSFER'] })));
+      r = okValue(await s.applySignal(PID, r.version, sig('ARC_LOG'), to('AWAIT_DEPOSIT', st('COMPLETED')), [])).record;
+      expect(await s.applySignal(PID, r.version, sig('LEDGER'), to('RESERVE', { stage: 'REJECTED', reason: 'INSUFFICIENT_FUNDS' }), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/no P1 reservation/) });
+      expect(okValue(await s.pendingOutbox())).toEqual([]);
+    });
+
     it('R1: a RESERVE failure (P1 refused or never posted) cannot carry P6; the payment still fails without it', async () => {
       for (const [src, reason] of [
         ['LEDGER', 'INSUFFICIENT_FUNDS'],
@@ -1204,7 +1224,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       // A failure ahead of the reservation (nothing started) fails the payment with no P6 either.
       const s = make();
       const r = okValue(await s.create(newPayment()));
-      expect(await s.applySignal(PID, r.version, sig('INTERNAL'), to('ARC_TRANSFER', { stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK' }), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /RESERVE leg ahead of ARC_TRANSFER is not COMPLETED/ });
+      expect(await s.applySignal(PID, r.version, sig('INTERNAL'), to('ARC_TRANSFER', { stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK' }), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/RESERVE leg ahead of ARC_TRANSFER is not COMPLETED/) });
       expect(okValue(await s.pendingOutbox())).toEqual([]);
     });
 
@@ -1214,9 +1234,9 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       r = okValue(await s.applySignal(PID, r.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED'), { txHash: TX }), [])).record;
       r = okValue(await s.applySignal(PID, r.version, sig('PAYOUT_CALLBACK'), to('PAYOUT', st('SUBMITTED'), { externalRef: 'po-1' }), [])).record;
       const failed = to('PAYOUT', { stage: 'REJECTED', reason: 'PAYOUT_FAILED' });
-      expect(await s.applySignal(PID, r.version, sig('PAYOUT_CALLBACK'), failed, [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /F-17.*closeFailedPayout/ });
+      expect(await s.applySignal(PID, r.version, sig('PAYOUT_CALLBACK'), failed, [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/F-17.*closeFailedPayout/) });
       for (const key of [partnerClaimKey(PID), partnerReturnKey(PID)]) {
-        expect(await s.applySignal(PID, r.version, sig('PAYOUT_CALLBACK'), failed, [outbox(key)])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /enqueued only by closeFailedPayout/ });
+        expect(await s.applySignal(PID, r.version, sig('PAYOUT_CALLBACK'), failed, [outbox(key)])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/enqueued only by closeFailedPayout/) });
       }
       expect(okValue(await s.applySignal(PID, r.version, sig('PAYOUT_CALLBACK'), failed, [])).record).toMatchObject({ status: 'FAILED', reason: 'PAYOUT_FAILED' });
       expect(okValue(await s.pendingOutbox())).toEqual([]);
@@ -1227,30 +1247,30 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const r = await payoutFailed(s);
       const close = await decide(s, 'CLOSE_PARTNER_UNRETURNED', PID, { caseId: CASE });
       const attempt = (ev: InboundSignal, items: readonly OutboxItem[] = claimAndRelease(), v: bigint = r.version) => s.closeFailedPayout(PID, v, ev, items);
-      expect(await attempt(opSig(close))).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /no PARTNER_RETURN case/ });
+      expect(await attempt(opSig(close))).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/no PARTNER_RETURN case/) });
       const c = await openCase(s);
       expect(c).toMatchObject({ caseId: CASE, state: 'OPEN', matchedLog: null });
-      expect(await attempt(opSig(close))).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /is not on case .* \(addCaseDecision first\)/ });
+      expect(await attempt(opSig(close))).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/is not on case .* \(addCaseDecision first\)/) });
       expect(okValue(await s.addCaseDecision(CASE, close.decisionId)).decisions).toEqual([...c.decisions, close.decisionId]);
       expect(await s.addCaseDecision(CASE, close.decisionId)).toMatchObject({ kind: 'OK', replayed: true, value: { decisions: [...c.decisions, close.decisionId] } });
       for (const items of [[outbox(releaseKey(PID))], [outbox(partnerClaimKey(PID))], [...claimAndRelease(), outbox(partnerReturnKey(PID))]]) {
-        expect(await attempt(opSig(close), items)).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /P6 and exactly one of P11 or P2R/ });
+        expect(await attempt(opSig(close), items)).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/P6 and exactly one of P11 or P2R/) });
       }
       expect(await attempt(opSig(close), claimAndRelease(), 99n)).toMatchObject({ kind: 'REJECTED', code: 'VERSION_CONFLICT' });
-      expect(await attempt(opSig(close, hex('d0')))).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /not the recorded signal/ });
+      expect(await attempt(opSig(close, hex('d0')))).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/not the recorded signal/) });
       expect(await attempt(sig('OPERATOR_DECISION', 'op:dec-none'))).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT' });
       const opener = okValue(await s.getDecision(c.decisions[0] as string));
-      expect(await attempt(opSig(opener))).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /is OPEN_PARTNER_CASE for pay-0101.*not CLOSE_PARTNER_UNRETURNED/ });
+      expect(await attempt(opSig(opener))).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/is OPEN_PARTNER_CASE for pay-0101.*not CLOSE_PARTNER_UNRETURNED/) });
       const forOther = await decide(s, 'CLOSE_PARTNER_UNRETURNED', PID2, { caseId: CASE });
       okValue(await s.addCaseDecision(CASE, forOther.decisionId));
-      expect(await attempt(opSig(forOther))).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /for pay-0202/ });
-      expect(await attempt({ ...opSig(close), source: 'INTERNAL' })).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /needs the recorded two-person CLOSE_PARTNER_UNRETURNED/ });
+      expect(await attempt(opSig(forOther))).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/for pay-0202/) });
+      expect(await attempt({ ...opSig(close), source: 'INTERNAL' })).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/needs the recorded two-person CLOSE_PARTNER_UNRETURNED/) });
       expect(okValue(await s.pendingOutbox())).toEqual([]);
       const out = okValue(await attempt(opSig(close)));
       expect(out).toMatchObject({ outcome: 'APPLIED', record: { stage: 'REJECTED', reason: 'PAYOUT_FAILED', status: 'FAILED', version: r.version + 1n } });
       expect(okValue(await s.pendingOutbox()).map((o) => o.key)).toEqual([partnerClaimKey(PID), releaseKey(PID)]);
       expect(await attempt(opSig(close))).toEqual({ kind: 'OK', value: { outcome: 'DUPLICATE', record: out.record }, replayed: true });
-      expect(await attempt(opSig(close), [...claimAndRelease(), outbox('o:new')], out.record.version)).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /already released; .*o:new/ });
+      expect(await attempt(opSig(close), [...claimAndRelease(), outbox('o:new')], out.record.version)).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/already released; .*o:new/) });
       expect(okValue(await s.getCase(CASE)).state).toBe('OPEN');
       const t = restart(s);
       expect(okValue(await t.get(PID))).toEqual(out.record);
@@ -1272,15 +1292,17 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const claimed = okValue(await s.claimInbound(log, triple)).claimedBy;
       expect(claimed).toMatchObject({ caseId: CASE, state: 'MATCHED', matchedLog: log.dedupeKey });
       expect(await s.claimInbound(log, triple)).toEqual({ kind: 'OK', value: { claimedBy: claimed }, replayed: true });
-      expect(await s.claimInbound({ ...log, payloadDigest: hex('42') }, triple)).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /different payload/ });
+      expect(await s.claimInbound({ ...log, payloadDigest: hex('42') }, triple)).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/different payload/) });
       // The partner returned: P11 is no longer the branch.
       const close = await decide(s, 'CLOSE_PARTNER_UNRETURNED', PID, { caseId: CASE });
       okValue(await s.addCaseDecision(CASE, close.decisionId));
-      expect(await s.closeFailedPayout(PID, r.version, opSig(close), claimAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /is MATCHED; the partner's return is P2R/ });
-      expect(await s.closeFailedPayout(PID, r.version, opSig(close), returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /needs the Arc log/ });
+      expect(await s.closeFailedPayout(PID, r.version, opSig(close), claimAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/is MATCHED; the partner's return is P2R/) });
+      expect(await s.closeFailedPayout(PID, r.version, opSig(close), returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/needs the Arc log/) });
+      // The claimed log's key under another source is not the Arc log.
+      expect(await s.closeFailedPayout(PID, r.version, { ...log, source: 'INTERNAL' }, returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/needs the Arc log/) });
       const other = sig('ARC_LOG', 'arc:other', hex('43'));
       okValue(await s.commitRange('arc', 1n, [other]));
-      expect(await s.closeFailedPayout(PID, r.version, other, returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /has not claimed arc:other/ });
+      expect(await s.closeFailedPayout(PID, r.version, other, returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/has not claimed arc:other/) });
       const out = okValue(await s.closeFailedPayout(PID, r.version, log, returnAndRelease()));
       expect(out.record).toMatchObject({ status: 'FAILED', version: r.version + 1n });
       expect(okValue(await s.pendingOutbox()).map((o) => o.key)).toEqual([partnerReturnKey(PID), releaseKey(PID)]);
@@ -1291,24 +1313,88 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       expect(await t.claimInbound(log, triple)).toMatchObject({ kind: 'OK', replayed: true });
     });
 
+    it('B1: a P2R close needs the claimed return to equal the payment\'s amount A; a case of another value never closes it (the log goes to P9)', async () => {
+      const s = make();
+      const r = await payoutFailed(s);
+      const open = await decide(s, 'OPEN_PARTNER_CASE', PID, { caseId: CASE });
+      const half = { ...triple, value: nativeWei(500_000_000_000_000_000n) };
+      okValue(await s.putCase(partnerCase({ decisions: [open.decisionId], expected: half })));
+      const log = sig('ARC_LOG', `arc:5042002:${hex('9b')}:0`, hex('41'));
+      expect(okValue(await s.claimInbound(log, half)).claimedBy).toMatchObject({ caseId: CASE, state: 'MATCHED', matchedLog: log.dedupeKey });
+      expect(await s.closeFailedPayout(PID, r.version, log, returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/expects a return of 500000000000000000, not this payment's 1000000000000000000.*P9/) });
+      expect(okValue(await s.pendingOutbox())).toEqual([]);
+      expect(okValue(await s.get(PID))).toEqual(r);
+    });
+
+    it('m1: a PAYOUT failure before the Arc leg started carries P6; after it COMPLETED any PAYOUT failure closes only through the F-17 close', async () => {
+      const s = make();
+      let r = okValue(await s.create(fiatBankPayment()));
+      r = okValue(await s.applySignal(PID, r.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).record;
+      const failed = to('PAYOUT', { stage: 'REJECTED', reason: 'METHOD_NOT_ENABLED' });
+      const out = okValue(await s.applySignal(PID, r.version, sig('INTERNAL'), failed, [outbox(releaseKey(PID))]));
+      expect(out).toMatchObject({ outcome: 'APPLIED', record: { status: 'FAILED', reason: 'METHOD_NOT_ENABLED' } });
+      expect(okValue(await s.pendingOutbox()).map((o) => o.key)).toEqual([releaseKey(PID)]);
+      // No P2P was posted (the Arc leg never completed): there is nothing at the partner to close.
+      expect(await s.closeFailedPayout(PID, out.record.version, sig('INTERNAL'), returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/only for a FIAT_BANK payment whose PAYOUT leg failed after the Arc leg COMPLETED/) });
+      // Arc leg COMPLETED (P2P): the same failure may not carry P6, and the F-17 close accepts it.
+      const t = make();
+      let q = await toSubmitted(t, fiatBankPayment());
+      q = okValue(await t.applySignal(PID, q.version, sig('ARC_LOG'), to('ARC_TRANSFER', st('COMPLETED'), { txHash: TX }), [])).record;
+      expect(await t.applySignal(PID, q.version, sig('INTERNAL'), failed, [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/F-17.*closeFailedPayout/) });
+      q = okValue(await t.applySignal(PID, q.version, sig('INTERNAL'), failed, [])).record;
+      expect(q).toMatchObject({ status: 'FAILED', reason: 'METHOD_NOT_ENABLED' });
+      await openCase(t);
+      const log = sig('ARC_LOG', `arc:5042002:${hex('9b')}:0`, hex('41'));
+      okValue(await t.claimInbound(log, triple));
+      expect(okValue(await t.closeFailedPayout(PID, q.version, log, returnAndRelease())).outcome).toBe('APPLIED');
+      expect(okValue(await t.pendingOutbox()).map((o) => o.key)).toEqual([partnerReturnKey(PID), releaseKey(PID)]);
+    });
+
+    it('m4: after P6 + P11, a later exact return is claimed and closes with P2R alone (no second P6); once, restart-safe', async () => {
+      const s = make();
+      const r = await payoutFailed(s);
+      await openCase(s);
+      const close = await decide(s, 'CLOSE_PARTNER_UNRETURNED', PID, { caseId: CASE });
+      okValue(await s.addCaseDecision(CASE, close.decisionId));
+      const out = okValue(await s.closeFailedPayout(PID, r.version, opSig(close), claimAndRelease()));
+      const log = sig('ARC_LOG', `arc:5042002:${hex('9b')}:0`, hex('41'));
+      const late = (items: readonly OutboxItem[], v: bigint = out.record.version) => s.closeFailedPayout(PID, v, log, items);
+      expect(await late([outbox(partnerReturnKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT' });
+      okValue(await s.commitRange('arc', 1n, [log]));
+      expect(await late([outbox(partnerReturnKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/has not claimed/) });
+      okValue(await s.claimInbound(log, triple));
+      for (const items of [returnAndRelease(), [outbox(partnerReturnKey(PID)), outbox('o:other')], [outbox('o:other')]]) {
+        expect(await late(items)).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION' });
+      }
+      expect(okValue(await s.pendingOutbox()).map((o) => o.key)).toEqual([partnerClaimKey(PID), releaseKey(PID)]);
+      expect(await late([outbox(partnerReturnKey(PID))], 99n)).toMatchObject({ kind: 'REJECTED', code: 'VERSION_CONFLICT' });
+      const done = okValue(await late([outbox(partnerReturnKey(PID))]));
+      expect(done).toMatchObject({ outcome: 'APPLIED', record: { status: 'FAILED', version: out.record.version + 1n } });
+      expect(okValue(await s.pendingOutbox()).map((o) => o.key)).toEqual([partnerClaimKey(PID), releaseKey(PID), partnerReturnKey(PID)]);
+      expect(okValue(await late([outbox(partnerReturnKey(PID))], done.record.version), true).outcome).toBe('DUPLICATE');
+      const t = restart(s);
+      expect(okValue(await t.get(PID))).toEqual(done.record);
+      expect(okValue(await t.pendingOutbox())).toEqual(okValue(await s.pendingOutbox()));
+    });
+
     it('closeFailedPayout is only for a failed payout; cases and claims refuse what they cannot prove', async () => {
       const s = make();
       const r = await toSubmitted(s);
-      expect(await s.closeFailedPayout(PID, r.version, sig('INTERNAL'), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /only for a FIAT_BANK payment whose PAYOUT leg is REJECTED\/PAYOUT_FAILED/ });
+      expect(await s.closeFailedPayout(PID, r.version, sig('INTERNAL'), [outbox(releaseKey(PID))])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/only for a FIAT_BANK payment whose PAYOUT leg failed after the Arc leg COMPLETED/) });
       expect(await s.closeFailedPayout(PID2, 1n, sig('INTERNAL'), [])).toMatchObject({ kind: 'REJECTED', code: 'NOT_FOUND' });
       const live = make();
       const l = await toSubmitted(live, fiatBankPayment());
-      expect(await live.closeFailedPayout(PID, l.version, sig('INTERNAL'), returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /only for/ });
+      expect(await live.closeFailedPayout(PID, l.version, sig('INTERNAL'), returnAndRelease())).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/only for/) });
       // Cases.
       expect(await s.getCase(CASE)).toMatchObject({ kind: 'REJECTED', code: 'NOT_FOUND' });
       expect(await s.addCaseDecision(CASE, 'dec-x')).toMatchObject({ kind: 'REJECTED', code: 'NOT_FOUND' });
-      expect(await s.putCase(partnerCase({ caseId: 'case-forged' }))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: /does not derive/ });
-      expect(await s.putCase(partnerCase())).toMatchObject({ kind: 'REJECTED', code: 'DECISION_MISSING', detail: /opens on a two-person OPEN_PARTNER_CASE/ });
-      expect(await s.putCase(partnerCase({ decisions: ['dec-none'] }))).toMatchObject({ kind: 'REJECTED', code: 'DECISION_MISSING', detail: /not recorded for it/ });
+      expect(await s.putCase(partnerCase({ caseId: 'case-forged' }))).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: expect.stringMatching(/does not derive/) });
+      expect(await s.putCase(partnerCase())).toMatchObject({ kind: 'REJECTED', code: 'DECISION_MISSING', detail: expect.stringMatching(/opens on a two-person OPEN_PARTNER_CASE/) });
+      expect(await s.putCase(partnerCase({ decisions: ['dec-none'] }))).toMatchObject({ kind: 'REJECTED', code: 'DECISION_MISSING', detail: expect.stringMatching(/not recorded for it/) });
       const elsewhere = await decide(s, 'OPEN_PARTNER_CASE', PID, { caseId: 'case-other' });
       expect(await s.putCase(partnerCase({ decisions: [elsewhere.decisionId] }))).toMatchObject({ kind: 'REJECTED', code: 'DECISION_MISSING' });
       const notOpener = await decide(s, 'LIFT_QUARANTINE', PID, { caseId: CASE });
-      expect(await s.putCase(partnerCase({ decisions: [notOpener.decisionId] }))).toMatchObject({ kind: 'REJECTED', code: 'DECISION_MISSING', detail: /OPEN_PARTNER_CASE/ });
+      expect(await s.putCase(partnerCase({ decisions: [notOpener.decisionId] }))).toMatchObject({ kind: 'REJECTED', code: 'DECISION_MISSING', detail: expect.stringMatching(/OPEN_PARTNER_CASE/) });
       await expect(s.putCase(partnerCase({ state: 'MATCHED' }))).rejects.toThrow(/OPEN with no claimed log/);
       await expect(s.putCase(partnerCase({ matchedLog: 'arc:x' }))).rejects.toThrow(/OPEN with no claimed log/);
       await expect(s.putCase(partnerCase({ expected: null }))).rejects.toThrow(/exactly for a PARTNER_RETURN/);
@@ -1318,17 +1404,17 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const burn = okValue(await s.putCase(partnerCase({ caseId: burnId, kind: 'NONCE_BURN', expected: null })));
       expect(await s.putCase(burn)).toEqual({ kind: 'OK', value: burn, replayed: true });
       const lift = await decide(s, 'LIFT_QUARANTINE', PID, { caseId: burnId, seq: 3n });
-      expect(await s.putCase({ ...burn, decisions: [lift.decisionId] })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: /already exists/ });
+      expect(await s.putCase({ ...burn, decisions: [lift.decisionId] })).toMatchObject({ kind: 'REJECTED', code: 'KEY_CONFLICT', detail: expect.stringMatching(/already exists/) });
       expect(await s.addCaseDecision(burnId, 'dec-none')).toMatchObject({ kind: 'REJECTED', code: 'DECISION_MISSING' });
       expect(await s.addCaseDecision(burnId, elsewhere.decisionId)).toMatchObject({ kind: 'REJECTED', code: 'DECISION_MISSING' });
       expect(okValue(await s.addCaseDecision(burnId, lift.decisionId)).decisions).toEqual([lift.decisionId]);
       expect(okValue(await s.getCase(burnId)).decisions).toEqual([lift.decisionId]);
       // Claims: only an Arc log; a log already applied to a payment is never claimed; two equal open cases claim nothing (F-12).
-      expect(await s.claimInbound(sig('DFNS_POLL', 'arc:x'), triple)).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /only an Arc log/ });
+      expect(await s.claimInbound(sig('DFNS_POLL', 'arc:x'), triple)).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/only an Arc log/) });
       expect(okValue(await s.claimInbound(sig('ARC_LOG', 'arc:none'), triple)).claimedBy).toBeNull();
       const done = sig('ARC_LOG', 'arc:done');
       okValue(await s.applySignal(PID, r.version, done, to('ARC_TRANSFER', st('COMPLETED'), { txHash: TX }), []));
-      expect(await s.claimInbound(done, triple)).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: /already applied to pay-/ });
+      expect(await s.claimInbound(done, triple)).toMatchObject({ kind: 'REJECTED', code: 'SIGNAL_CONFLICT', detail: expect.stringMatching(/already applied to pay-/) });
       await openCase(s);
       const case2 = deriveCaseId('PARTNER_RETURN', PID2);
       const open2 = await decide(s, 'OPEN_PARTNER_CASE', PID2, { caseId: case2 });
@@ -1384,11 +1470,11 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const deposit = newPayment({ payIn: { method: 'STABLECOIN_DEPOSIT', asset: 'USDC', network: 'ARC' }, legs: ['AWAIT_DEPOSIT', 'RESERVE', 'ARC_TRANSFER'] });
       const s = make();
       const r = okValue(await s.create(deposit));
-      expect(await s.applySignal(PID, r.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /RESERVE cannot progress while a leg ahead/ });
+      expect(await s.applySignal(PID, r.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/RESERVE cannot progress while a leg ahead/) });
       const s2 = make();
       let q = okValue(await s2.create(fiatBankPayment()));
       q = okValue(await s2.applySignal(PID, q.version, sig('LEDGER'), to('RESERVE', st('COMPLETED')), [])).record;
-      expect(await s2.applySignal(PID, q.version, sig('PAYOUT_CALLBACK'), to('PAYOUT', st('SUBMITTED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /PAYOUT cannot progress while a leg ahead/ });
+      expect(await s2.applySignal(PID, q.version, sig('PAYOUT_CALLBACK'), to('PAYOUT', st('SUBMITTED')), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/PAYOUT cannot progress while a leg ahead/) });
     });
 
     it('S453: a hold for nonce 0 (a wallet\'s first transaction) is accepted', async () => {
@@ -1405,7 +1491,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       let r = await pending(s);
       r = okValue(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('APPROVED')), [])).record;
       const h: NewNonceHold = { wallet: walletRef('w-hot'), dfnsTransferId: 'tr-01', subject: PID, nonce: 4n, aborted: false };
-      expect(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('RESERVE', st('COMPLETED'), { externalRef: 'tr-01', placeHold: h }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /belongs to the Arc leg/ });
+      expect(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('RESERVE', st('COMPLETED'), { externalRef: 'tr-01', placeHold: h }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/belongs to the Arc leg/) });
       expect(okValue(await s.listActiveHolds(walletRef('w-hot')))).toEqual([]);
     });
 
@@ -1420,7 +1506,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       let r = await pending(s);
       r = okValue(await s.applySignal(PID, r.version, sig('DFNS_POLL'), to('ARC_TRANSFER', st('APPROVED')), [])).record;
       const bare: OperatorDecision = (({ txHash: _drop, ...rest }) => rest)(decision({ kind: 'LINK_HASH', subject: PID }));
-      expect(await s.recordDecision(opSig(bare), bare)).toMatchObject({ kind: 'REJECTED', code: 'WRONG_KIND', detail: /names the lower-case hash/ });
+      expect(await s.recordDecision(opSig(bare), bare)).toMatchObject({ kind: 'REJECTED', code: 'WRONG_KIND', detail: expect.stringMatching(/names the lower-case hash/) });
       const upper = decision({ kind: 'LINK_HASH', subject: PID, txHash: `0x${'7A'.repeat(32)}` });
       expect(await s.recordDecision(opSig(upper), upper)).toMatchObject({ kind: 'REJECTED', code: 'WRONG_KIND' });
       const carried = decision({ kind: 'ABORT_ACCEPTED', subject: PID, txHash: TX });
@@ -1437,7 +1523,7 @@ describe.each(FACTORIES)('PaymentStorePort contract: %s', (_name, make, restart)
       const s = make();
       let r = okValue(await s.create(deposit()));
       r = okValue(await s.applySignal(PID, r.version, sig('ARC_LOG'), to('AWAIT_DEPOSIT', st('SUBMITTED')), [])).record;
-      expect(await s.applySignal(PID, r.version, sig('INTERNAL'), to('ARC_TRANSFER', { stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK' }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: /cannot fail while a leg ahead/ });
+      expect(await s.applySignal(PID, r.version, sig('INTERNAL'), to('ARC_TRANSFER', { stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK' }), [])).toMatchObject({ kind: 'REJECTED', code: 'ILLEGAL_TRANSITION', detail: expect.stringMatching(/cannot fail while a leg ahead/) });
       const s2 = make();
       const q = okValue(await s2.create(deposit()));
       expect(okValue(await s2.applySignal(PID, q.version, sig('INTERNAL'), to('ARC_TRANSFER', { stage: 'REJECTED', reason: 'BLOCKLISTED_PRECHECK' }), [])).record.status).toBe('FAILED');
