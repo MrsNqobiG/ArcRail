@@ -1,7 +1,8 @@
 /** JPAYIN: opens OPS cases through the exported queue interface (never edits src/ops). */
 import { cbsMinor, usdcUnits } from '../../amounts/index.js';
 import type { OpenCaseInput, OpsQueue } from '../../ops/queue.js';
-import type { CaseKind, CaseOption, Leg } from '../../ops/types.js';
+import type { CaseKind, CaseOption, Leg, OpsAmount } from '../../ops/types.js';
+import { settlementDigest } from './types.js';
 import type { HoldReason, PayInConfig, PayInExpectation, PayInResult } from './types.js';
 
 export type CaseOpener = Pick<OpsQueue, 'openCase'>;
@@ -51,13 +52,20 @@ export async function hold(
   const kind = KIND_OF[reason];
   const fiat = exp.method === 'FIAT';
   const unit = fiat ? 'CBS_MINOR' : 'USDC_UNITS';
-  const brand = (n: bigint): ReturnType<typeof cbsMinor> => (fiat ? cbsMinor(n) : (usdcUnits(n) as never));
+  const brand = (n: bigint): OpsAmount => (fiat ? cbsMinor(n) : usdcUnits(n));
   const options: CaseOption[] = [];
   let amounts: OpenCaseInput['amounts'] = null;
   const hasAmount = received !== null && received > 0n;
   if (kind === 'UNDERPAYMENT' || kind === 'OVERPAYMENT') {
     amounts = { unit, expected: brand(exp.expected), confirmed: brand(received as bigint) };
-    options.push({ action: 'ACCEPT_WITH_CONSENT', optionId: 'accept-confirmed', unit, acceptedAmount: brand(received as bigint) });
+    options.push({
+      action: 'ACCEPT_WITH_CONSENT',
+      optionId: 'accept-confirmed',
+      unit,
+      acceptedAmount: brand(received as bigint),
+      quoteId: null,
+      settlementDigest: settlementDigest(exp),
+    });
   }
   if (kind === 'QUARANTINE') options.push({ action: 'RELEASE_QUARANTINE', optionId: 'release' });
   if (hasAmount) options.push({ action: 'REFUND', optionId: 'refund-received', template: 'P13_PAYIN_REFUND', legs: refundLegs(exp, cfg, received as bigint) });
