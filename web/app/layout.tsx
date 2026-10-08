@@ -1,0 +1,1 @@
+import "./globals.css"; export const metadata={title:"ArcRail Control Plane",description:"Arc Testnet settlement rail showcase"}; export default function Layout({children}:{children:React.ReactNode}){return <html lang="en"><body>{children}</body></html>}

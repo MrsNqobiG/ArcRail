@@ -1,0 +1,1 @@
+import {action} from "../../../lib/state"; export const dynamic="force-dynamic"; export async function POST(req:Request){try{const b=await req.json();return Response.json(await action(b.type,b.payload||{}))}catch(e){return Response.json({error:e instanceof Error?e.message:"Unknown error"},{status:400})}}
