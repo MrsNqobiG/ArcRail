@@ -2,7 +2,7 @@
   "name": "arcrail-desk-demo",
   "private": true,
   "type": "module",
-  "description": "Public, self-running browser demo of the ArcRail settlement rail (no server, no keys, no broadcasts).",
+  "description": "Public, self-running browser demo of the ArcRail settlement rail (no server; testnet keys stay in the visitor's browser; Arc testnet only).",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

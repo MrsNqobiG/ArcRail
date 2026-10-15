@@ -135,7 +135,7 @@ export function PaymentsView({ onGoToCases, onGoToSettle }: { onGoToCases: () =>
       <SectionTitle
         id="payments"
         title="Live payment engine"
-        sub="The server walks payments through the real stage machine: deterministic posting keys, submit-marker-before-POST, history dedupe and ops cases — the D1 flow, simulated with integer minor units."
+        sub="This page walks payments through the real stage machine: deterministic posting keys, submit-marker-before-POST, history dedupe and ops cases — the D1 flow, simulated with integer minor units."
         right={<Chip tone={paused ? 'rose' : 'emerald'}>{paused ? 'RAIL PAUSED — fail closed' : 'rail operational'}</Chip>}
       />
 

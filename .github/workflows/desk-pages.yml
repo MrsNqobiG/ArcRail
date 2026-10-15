@@ -1,7 +1,7 @@
 # Public demo (desk/): build the static site and publish it to the gh-pages branch,
 # which GitHub Pages serves at https://mrsnqobig.github.io/ArcRail/.
 # Runs when desk/ changes on main, or by hand (Actions → desk-pages → Run workflow) on main only.
-# The demo holds no keys and broadcasts nothing (desk/README.md).
+# The site holds no keys; visitors' testnet keys are made and kept in their own browser (desk/README.md).
 #
 # Least privilege: the build job (which runs third-party npm packages) gets a read-only
 # token. Only the publish job can write, and it runs no npm code: it downloads the built

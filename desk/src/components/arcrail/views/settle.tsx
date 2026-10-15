@@ -113,7 +113,11 @@ export function SettleView({ paymentId }: { paymentId?: string | null }) {
   }, []);
 
   useEffect(() => {
-    setAck(window.sessionStorage.getItem(ACK_KEY) === "yes");
+    try {
+      setAck(window.sessionStorage.getItem(ACK_KEY) === "yes");
+    } catch {
+      /* storage blocked: the notice is asked again */
+    }
     void load(true);
     const t = setInterval(() => void load(false), 8_000);
     return () => clearInterval(t);
@@ -121,13 +125,21 @@ export function SettleView({ paymentId }: { paymentId?: string | null }) {
 
   function confirmAck(next: boolean) {
     setAck(next);
-    if (next) window.sessionStorage.setItem(ACK_KEY, "yes");
-    else window.sessionStorage.removeItem(ACK_KEY);
+    try {
+      if (next) window.sessionStorage.setItem(ACK_KEY, "yes");
+      else window.sessionStorage.removeItem(ACK_KEY);
+    } catch {
+      /* storage blocked: the acknowledgement lasts for this view only */
+    }
   }
 
-  async function copy(text: string) {
-    await navigator.clipboard.writeText(text);
-    toast.success("Address copied");
+  async function copy(text: string, hint = "Address copied") {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(hint);
+    } catch {
+      toast.message(`Copy blocked by this browser. Address: ${text}`);
+    }
   }
 
   function requestIdFor(dest: string, value: string) {
@@ -270,7 +282,15 @@ export function SettleView({ paymentId }: { paymentId?: string | null }) {
           <div className="mt-2 flex flex-wrap gap-2">
             <Button size="sm" variant="outline" className="h-11 border-white/15" onClick={() => status && copy(status.desk.address)}>Copy address</Button>
             <Button size="sm" variant="outline" className="h-11 border-white/15" onClick={() => void load(true)}>Refresh</Button>
-            <a href={status?.faucet ?? "https://faucet.circle.com"} target="_blank" rel="noreferrer" className="inline-flex h-11 items-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground">
+            <a
+              href={status?.faucet ?? "https://faucet.circle.com"}
+              target="_blank"
+              rel="noreferrer"
+              onClick={() => {
+                if (status) void copy(status.desk.address, "Address copied. In the faucet pick USDC and Arc Testnet, paste it, and press Send. This page updates by itself.");
+              }}
+              className="inline-flex h-11 items-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground"
+            >
               Open faucet
             </a>
           </div>
