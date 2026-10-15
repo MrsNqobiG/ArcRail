@@ -184,7 +184,7 @@ export function OverviewView({ onStartTour }: { onStartTour: () => void }) {
         ))}
       </div>
 
-      <SectionTitle id="money" title="Money invariants" sub="Zero tolerance, enforced in code, tests and at runtime. The live demo in this explorer implements them end to end." />
+      <SectionTitle id="money" title="Money invariants" sub="Zero tolerance, enforced in code, tests and at runtime. The adapter in the repo enforces them; this demo simulates them with integer minor units." />
       <Panel title="CLAUDE.md — money invariants">
         <Bullets items={MONEY_INVARIANTS} />
       </Panel>

@@ -143,7 +143,7 @@ async function paymentGet(id: string): Promise<Response> {
       ? null
       : p.live === true
         ? "Included on Arc testnet. The journal moved to SETTLED only after a receipt was read back and a second provider agreed."
-        : "Rehearsal hash only. It was not submitted to Arc. Use Testnet settle to broadcast, or the chain probe to show this hash is absent.",
+        : "Rehearsal hash only. It was not submitted to Arc or any other chain.",
     postings: entries.map((e) => ({ ...e, amountText: fmt(Number(e.amountMinor)) })),
     history: hist.map((h) => ({
       eventId: h.eventId,
@@ -164,8 +164,14 @@ async function journalGet(): Promise<Response> {
     balances.set(dr, (balances.get(dr) ?? 0) + amt);
     balances.set(cr, (balances.get(cr) ?? 0) - amt);
   }
-  const totalDr = entries.reduce((s, e) => s + Number(e.amountMinor), 0);
-  const totalCr = totalDr;
+  // Recomputed from the journal on every read: each side summed on its own, and every account balance netted.
+  let totalDr = 0;
+  let totalCr = 0;
+  for (const e of entries) {
+    if (e.debitAccount) totalDr += Number(e.amountMinor);
+    if (e.creditAccount) totalCr += Number(e.amountMinor);
+  }
+  const net = [...balances.values()].reduce((s, v) => s + v, 0);
   return json({
     entries: entries.map((e) => ({ ...e, amountText: fmt(Number(e.amountMinor)) })),
     balances: [...balances.entries()]
@@ -174,7 +180,7 @@ async function journalGet(): Promise<Response> {
     conservation: {
       totalDr,
       totalCr,
-      balanced: totalDr === totalCr,
+      balanced: totalDr === totalCr && net === 0,
       note: "For every business event, debits equal credits",
     },
   });
@@ -237,7 +243,7 @@ export async function handleArcApi(request: Request): Promise<Response> {
     if (route[0] === "treasury" || route[0] === "chain") {
       return json({ error: "Live testnet sending is not part of the public demo. Nothing here is signed or broadcast." }, 501);
     }
-    if (route[0] === "meta" && method === "GET") return metaGet();
+    if (route[0] === "meta" && method === "GET") return await metaGet();
     if (route[0] === "meta" && method === "POST") {
       const body = (await request.json().catch(() => ({}))) as { action?: string };
       if (body.action === "reset") {
@@ -256,13 +262,13 @@ export async function handleArcApi(request: Request): Promise<Response> {
       });
       return json({ reset: true });
     }
-    if (route[0] === "journal" && method === "GET") return journalGet();
-    if (route[0] === "payments" && route.length === 1 && method === "GET") return paymentsGet();
+    if (route[0] === "journal" && method === "GET") return await journalGet();
+    if (route[0] === "payments" && route.length === 1 && method === "GET") return await paymentsGet();
     if (route[0] === "payments" && route.length === 1 && method === "POST") {
-      return serialized(() => paymentsPost(request));
+      return await serialized(() => paymentsPost(request));
     }
     if (route[0] === "payments" && route.length === 2 && method === "GET") {
-      return paymentGet(decodeURIComponent(route[1]!));
+      return await paymentGet(decodeURIComponent(route[1]!));
     }
     if (route[0] === "payments" && route[2] === "events" && method === "POST") {
       const id = decodeURIComponent(route[1]!);
@@ -270,13 +276,13 @@ export async function handleArcApi(request: Request): Promise<Response> {
       const r = await serialized(() => applyEvent(id, body.type));
       return json({ ...r, broadcasts: false });
     }
-    if (route[0] === "cases" && method === "GET") return casesGet();
+    if (route[0] === "cases" && method === "GET") return await casesGet();
     if (route[0] === "cases" && method === "POST") {
       const body = await request.json();
       const r = await serialized(() => actOnCase(body));
       return json(r);
     }
-    if (route[0] === "recon" && method === "GET") return reconGet();
+    if (route[0] === "recon" && method === "GET") return await reconGet();
     if (route[0] === "recon" && method === "POST") {
       const body = (await request.json()) as { mode: "run" | "inject-drift" | "unpause"; approver1?: string; approver2?: string };
       const r = await serialized(() => runRecon(body.mode, { a1: body.approver1, a2: body.approver2 }));

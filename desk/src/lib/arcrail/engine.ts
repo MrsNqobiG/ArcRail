@@ -114,6 +114,7 @@ export async function createPayment(input: {
   if (amountMinor > 5_000_000_000) fail('400 AMOUNT_NOT_REPRESENTABLE')
   const feeMinor = parseMinor(input.fee ?? '0.25')
   if (feeMinor < 0) fail('400 FEE_NEGATIVE')
+  if (feeMinor > 5_000_000_000) fail('400 FEE_NOT_REPRESENTABLE')
 
   const id = await nextSeq('pm-', 'Payment')
   const legs: LegState[] = combo.legs.map((kind) => ({ kind, seq: 0, stage: 'CREATED', status: 'PENDING', reason: null }))
@@ -141,6 +142,8 @@ export async function createPayment(input: {
 function parseMinor(dec: string): number {
   const m = /^(\d+)(?:\.(\d{1,6}))?$/.exec(dec.trim())
   if (!m) fail(`400 AMOUNT_NOT_REPRESENTABLE: "${dec}" is not a decimal string`)
+  // Bound the whole part first so every value stays an exact integer (<= 5e9 minor units, far below 2^53).
+  if (m[1].replace(/^0+/, '').length > 4 || Number(m[1]) > 5000) fail(`400 AMOUNT_NOT_REPRESENTABLE: "${dec}" exceeds 5000`)
   const frac = (m[2] ?? '').padEnd(6, '0')
   return Number(m[1]) * 1_000_000 + Number(frac)
 }
