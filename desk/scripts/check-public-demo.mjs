@@ -1,6 +1,8 @@
 // Guard for the public demo (run after `npm run build`; exit 1 on any finding).
-// 1. No blockchain, custody, wallet or key-handling library is declared, installed or imported.
+// 1. No custody, wallet-connector or payment-provider SDK is declared, installed or imported.
+//    viem is allowed: it signs Arc testnet transfers locally with keys made in the visitor's browser.
 // 2. The built site loads nothing from another host, and names no host outside the allowlist.
+// 3. No Arc mainnet host appears anywhere in the build.
 // Usage: node scripts/check-public-demo.mjs [--root <desk dir>]
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -8,14 +10,22 @@ import { join, resolve } from 'node:path'
 const i = process.argv.indexOf('--root')
 const root = resolve(i > 0 ? process.argv[i + 1] : new URL('..', import.meta.url).pathname)
 
-// Hashing (@noble/hashes) is allowed; signing, key derivation and chain clients are not.
+// Custody (DFNS), Circle/VALR SDKs, wallet connectors and second chain stacks are refused.
 const FORBIDDEN_PKGS =
-  /^(viem|ethers|web3|web3-[a-z-]+|ox|abitype|wagmi|@wagmi\/|@dfns\/|@circle-fin\/|@solana\/|bitcoinjs-lib|@noble\/curves|@noble\/secp256k1|@noble\/ed25519|@scure\/bip32|@scure\/bip39|@ethereumjs\/|ethereumjs-|@metamask\/|@walletconnect\/|@coinbase\/|@reown\/|elliptic|secp256k1|tweetnacl|hdkey|@safe-global\/|alchemy-sdk|@alch\/)(\/|$)/
+  /^(ethers|web3|web3-[a-z-]+|wagmi|@wagmi\/|@dfns\/|@circle-fin\/|valr[a-z-]*|@valr\/|@solana\/|bitcoinjs-lib|@ethereumjs\/|ethereumjs-|@metamask\/|@walletconnect\/|@coinbase\/|@reown\/|tweetnacl|@safe-global\/|alchemy-sdk|@alch\/)(\/|$)/
 const ALLOWED_HOSTS = new Set([
-  'explorer.testnet.arc.io', // link text only; unreachable while nothing is live
-  'react.dev', // React's own error-message links
-  'www.w3.org', // SVG/XML namespaces
+  // Arc TESTNET only (chain 5042002): public RPCs, explorer, mirror, Circle faucet
+  'rpc.testnet.arc.io', 'rpc.testnet.arc.network',
+  'rpc.drpc.testnet.arc.io', 'rpc.drpc.testnet.arc.network',
+  'rpc.blockdaemon.testnet.arc.io', 'rpc.blockdaemon.testnet.arc.network',
+  'rpc.quicknode.testnet.arc.io', 'rpc.quicknode.testnet.arc.network',
+  'explorer.testnet.arc.io', 'testnet.arcscan.app', 'faucet.circle.com',
+  // inert strings inside libraries (error-message docs links, unused ENS/ABI helpers)
+  'react.dev', 'www.w3.org', 'viem.sh', 'abitype.dev', 'oxlib.sh', 'docs.soliditylang.org',
+  '4byte.sourcify.dev', 'ipfs.io', 'arweave.net',
 ])
+// Anything that looks like Arc but is not a testnet host is treated as mainnet.
+const MAINNET_RE = /(^|\.)arc\.(io|network)$|arcscan\.app$/
 const TEXT_EXT = /\.(html?|m?js|css|svg|json|webmanifest|txt|xml|map)$/i
 const findings = []
 
@@ -64,11 +74,13 @@ for (const f of files(dist)) {
   const text = readFileSync(f, 'utf8')
   for (const m of text.matchAll(HOST_RE)) {
     const host = m[1].toLowerCase()
+    if (MAINNET_RE.test(host) && !host.includes('testnet')) findings.push(`${rel(f)} names an Arc MAINNET host ${host}`)
     if (!ALLOWED_HOSTS.has(host)) findings.push(`${rel(f)} names host ${host}`)
   }
   for (const m of text.matchAll(SCHEME_RE)) {
-    const host = m[1].toLowerCase()
-    if (!ALLOWED_HOSTS.has(host)) findings.push(`${rel(f)} has a URL to ${host || '(empty host)'}`)
+    const host = m[1].toLowerCase().replace(/\$\{.*$/, '')
+    if (!host) continue // scheme assembled at runtime from parts already checked above
+    if (!ALLOWED_HOSTS.has(host)) findings.push(`${rel(f)} has a URL to ${host}`)
   }
   if (/\.(html?|svg)$/i.test(f)) {
     for (const m of text.matchAll(LOAD_RE)) findings.push(`${rel(f)} loads an external resource: ${m[0]}`)
@@ -81,4 +93,4 @@ if (findings.length) {
   for (const x of [...new Set(findings)]) console.error(`  - ${x}`)
   process.exit(1)
 }
-console.log('public-demo guard: OK (no chain/custody libraries, no external loads, hosts within allowlist)')
+console.log('public-demo guard: OK (no custody/wallet SDKs, no external loads, Arc testnet hosts only, no mainnet host)')

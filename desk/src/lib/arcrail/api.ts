@@ -1,12 +1,13 @@
 /**
  * The demo's /api/* surface, run in the browser (see src/api-shim.ts).
- * Same routes and responses as the operator desk, minus the live testnet
- * treasury and chain probe: the public demo holds no keys and broadcasts nothing.
+ * Same routes as the operator desk. The treasury routes sign real Arc testnet
+ * transfers with keys created and kept in this browser (treasury.ts).
  */
 import { applyEvent, createPayment, fmt, resetDemo, runRecon, actOnCase, type EventType } from "./engine";
 import { db, serialized } from "./memory";
-
-const ARC_EXPLORER = "https://explorer.testnet.arc.io";
+import { probeChain, sampleNativeTransfer } from "./chain";
+import { ARC_EXPLORER } from "./arc-chain";
+import { sendTestnet, sweepReceiver, treasuryStatus } from "./treasury";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -143,7 +144,7 @@ async function paymentGet(id: string): Promise<Response> {
       ? null
       : p.live === true
         ? "Included on Arc testnet. The journal moved to SETTLED only after a receipt was read back and a second provider agreed."
-        : "Rehearsal hash only. It was not submitted to Arc or any other chain.",
+        : "Rehearsal hash only. It was not submitted to Arc. Use Testnet settle to broadcast, or the chain probe to show this hash is absent.",
     postings: entries.map((e) => ({ ...e, amountText: fmt(Number(e.amountMinor)) })),
     history: hist.map((h) => ({
       eventId: h.eventId,
@@ -201,7 +202,7 @@ async function metaGet(): Promise<Response> {
     paused: Boolean(rail?.paused),
     pausedReason: (rail?.pausedReason as string | null) ?? null,
     broadcasts: false,
-    treasuryBroadcasts: false,
+    treasuryBroadcasts: true,
     chainId: 5042002,
     mainnet: "disabled",
   });
@@ -240,8 +241,37 @@ export async function handleArcApi(request: Request): Promise<Response> {
   const route = parts.slice(1); // drop "api"
 
   try {
-    if (route[0] === "treasury" || route[0] === "chain") {
-      return json({ error: "Live testnet sending is not part of the public demo. Nothing here is signed or broadcast." }, 501);
+    if (route[0] === "treasury" && route.length === 1 && method === "GET") {
+      return json(await treasuryStatus(url.searchParams.get("fresh") === "1"));
+    }
+    if (route[0] === "treasury" && route[1] === "send" && method === "POST") {
+      const body = (await request.json()) as {
+        to?: string;
+        amount?: string;
+        paymentId?: string | null;
+        requestId?: string;
+        from?: "desk" | "receiver";
+        ack?: boolean;
+      };
+      if (body.from && body.from !== "desk" && body.from !== "receiver") {
+        return json({ ok: false, error: "Sender must be the desk or the receiver." }, 422);
+      }
+      const result = await sendTestnet(body);
+      return json(result, result.ok ? 200 : 422);
+    }
+    if (route[0] === "treasury" && route[1] === "sweep" && method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { requestId?: string; ack?: boolean };
+      const result = await sweepReceiver(body.requestId, body.ack === true);
+      return json(result, result.ok ? 200 : 422);
+    }
+    if (route[0] === "chain" && method === "GET") {
+      if (url.searchParams.get("sample") === "1") {
+        const sample = await sampleNativeTransfer();
+        if (!sample) return json({ error: "No plain native transfer in the last few blocks." }, 404);
+        const proof = await probeChain(sample.hash);
+        return json({ sample, ...proof });
+      }
+      return json(await probeChain(url.searchParams.get("tx")));
     }
     if (route[0] === "meta" && method === "GET") return await metaGet();
     if (route[0] === "meta" && method === "POST") {

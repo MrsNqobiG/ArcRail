@@ -14,6 +14,7 @@ import { VerificationView } from '@/components/arcrail/views/verification'
 import { RisksView } from '@/components/arcrail/views/risks'
 import { FactsView } from '@/components/arcrail/views/facts'
 import { ReconView } from '@/components/arcrail/views/recon'
+import { SettleView } from '@/components/arcrail/views/settle'
 import { GuidedTour } from '@/components/arcrail/tour'
 
 export default function Home() {
@@ -31,9 +32,10 @@ export default function Home() {
   return (
     <>
       <Shell view={view} setView={setView} onStartTour={() => setTourOpen(true)}>
-        {view === 'overview' && <OverviewView onStartTour={() => setTourOpen(true)} />}
+        {view === 'overview' && <OverviewView onStartTour={() => setTourOpen(true)} onOpenDesk={() => setView('settle')} />}
         {view === 'journey' && <JourneyView />}
-        {view === 'payments' && <PaymentsView onGoToCases={() => setView('ops')} />}
+        {view === 'settle' && <SettleView />}
+        {view === 'payments' && <PaymentsView onGoToCases={() => setView('ops')} onGoToSettle={() => setView('settle')} />}
         {view === 'ledger' && <LedgerView />}
         {view === 'recon' && <ReconView onGoToCases={() => setView('ops')} />}
         {view === 'ops' && <OpsView />}

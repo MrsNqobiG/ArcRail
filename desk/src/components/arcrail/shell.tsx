@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
 export type ViewId =
-  | 'overview' | 'journey' | 'payments' | 'ledger' | 'recon' | 'ops'
+  | 'overview' | 'journey' | 'settle' | 'payments' | 'ledger' | 'recon' | 'ops'
   | 'lifecycle' | 'gates' | 'modules' | 'verification' | 'risks' | 'facts'
 
 export const NAV: { group: string; items: { id: ViewId; label: string; hint: string }[] }[] = [
@@ -20,8 +20,9 @@ export const NAV: { group: string; items: { id: ViewId; label: string; hint: str
     ],
   },
   {
-    group: 'rail simulation',
+    group: 'live rail',
     items: [
+      { id: 'settle', label: 'Testnet settle', hint: 'real Arc testnet transfer, proven on-chain' },
       { id: 'payments', label: 'Payments', hint: 'drive the stage machine' },
       { id: 'ledger', label: 'Ledger', hint: 'journal, GL, P-templates' },
       { id: 'recon', label: 'Reconciliation', hint: 'three-way + circuit breaker' },
@@ -82,7 +83,7 @@ export function Shell({ view, setView, onStartTour, children }: { view: ViewId; 
             </div>
             <div>
               <div className="text-sm font-bold leading-tight tracking-tight">ArcRail <span className="text-emerald-400">Explorer</span></div>
-              <Mono className="text-muted-foreground">public demo · runs in your browser</Mono>
+              <Mono className="text-muted-foreground">Arc testnet settlement desk · chain 5042002</Mono>
             </div>
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
@@ -146,7 +147,7 @@ export function Shell({ view, setView, onStartTour, children }: { view: ViewId; 
 
       <footer className="mt-auto border-t border-white/10 bg-background/85">
         <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3">
-          <Mono className="text-muted-foreground">Public demo: everything runs in your browser. Nothing is signed or sent to any blockchain.</Mono>
+          <Mono className="text-muted-foreground">Testnet settle signs real Arc testnet transfers in your browser. The payments desk rehearses until a receipt is attached.</Mono>
           <Mono className="text-muted-foreground/80">Not a financial service · testnet USDC has no value · not legal advice</Mono>
           <Mono className="ml-auto text-muted-foreground/60">mainnet stays off</Mono>
         </div>

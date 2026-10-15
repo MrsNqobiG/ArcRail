@@ -35,7 +35,7 @@ const MONEY_INVARIANTS = [
   'REVERSED means a compensating ledger entry only — nothing on Arc can be reversed on-chain.',
 ]
 
-export function OverviewView({ onStartTour }: { onStartTour: () => void }) {
+export function OverviewView({ onStartTour, onOpenDesk }: { onStartTour: () => void; onOpenDesk: () => void }) {
   const gmSigned = GATES.filter((g) => g.group === 'GM' && g.status === 'NOT SIGNED').length
   const frozen = UNIT_LEDGER.filter((u) => u.status.startsWith('FROZEN')).length
   const moneyPathModules = MODULES.filter((m) => m.moneyPath).length
@@ -69,13 +69,21 @@ export function OverviewView({ onStartTour }: { onStartTour: () => void }) {
               a bounded context that talks to Arc on one side and to the CBS through an anti-corruption layer on the other.
             </p>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              This public demo simulates the rail in your browser: every payment, ledger posting and case is a rehearsal, and nothing is signed or sent to any blockchain. Press Guided tour to watch it run by itself. This is not a bank, not a crypto-asset service, and not advice.
+              Testnet settle signs a real Arc testnet transfer from a wallet created in your browser (valueless testnet USDC, chain 5042002 only, two independent providers must agree). The Payments desk and the Guided tour rehearse the ledger and send nothing by themselves. This is not a bank, not a crypto-asset service, and not advice.
             </p>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
               <Button
-                onClick={onStartTour}
+                onClick={onOpenDesk}
                 size="lg"
                 className="h-auto min-h-11 w-full gap-2 bg-emerald-600 px-4 py-3 text-sm font-bold text-black hover:bg-emerald-500 sm:w-auto"
+              >
+                Send a real testnet transfer
+              </Button>
+              <Button
+                onClick={onStartTour}
+                size="lg"
+                variant="outline"
+                className="h-auto min-h-11 w-full gap-2 border-white/15 px-4 py-3 text-sm font-semibold sm:w-auto"
               >
                 <Play className="h-4 w-4" /> Guided tour
               </Button>

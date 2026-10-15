@@ -32,7 +32,7 @@ const EVENTS: { type: string; label: string; hint: string; tone: string }[] = [
   { type: 'approve', label: 'Approval resolved ✓', hint: 'FIDO2 user-action approval; externalId becomes known', tone: 'emerald' },
   { type: 'deny', label: 'Approval denied ✗', hint: 'F-1 → REJECTED / APPROVAL_DENIED + P6 (proof a1)', tone: 'rose' },
   { type: 'approval_expire', label: 'Approval expires', hint: 'F-2 → EXPIRED / APPROVAL_EXPIRED + P6', tone: 'rose' },
-  { type: 'broadcast', label: 'Rehearsal broadcast', hint: 'Local hash only — not submitted to any chain.', tone: 'amber' },
+  { type: 'broadcast', label: 'Rehearsal broadcast', hint: 'Local hash only — not submitted. Use Testnet settle for a real transaction.', tone: 'amber' },
   { type: 'onchain', label: 'On chain (included)', hint: 'Block included → CONFIRMING; we still wait for our own indexer', tone: 'emerald' },
   { type: 'confirm', label: 'Confirm (own log)', hint: 'Canonical system-emitter log → COMPLETED; P2/P2I/P2P + P3 + P4 gas post', tone: 'emerald' },
   { type: 'payout_arrived', label: 'Partner ARRIVED', hint: 'FIAT_BANK only: authenticated final confirmation; P2 + P3 post', tone: 'emerald' },
@@ -44,7 +44,7 @@ const EVENTS: { type: string; label: string; hint: string; tone: string }[] = [
   { type: 'cancel', label: 'Operator cancel', hint: 'Only while unsigned → CANCELLED / CANCELLED_BY_OPERATOR + P6', tone: 'amber' },
 ]
 
-export function PaymentsView({ onGoToCases }: { onGoToCases: () => void }) {
+export function PaymentsView({ onGoToCases, onGoToSettle }: { onGoToCases: () => void; onGoToSettle: () => void }) {
   const [list, setList] = useState<PaymentRow[]>([])
   const [paused, setPaused] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
@@ -254,7 +254,7 @@ export function PaymentsView({ onGoToCases }: { onGoToCases: () => void }) {
                 </div>
               </Panel>
 
-              <Panel title="signal sources — rehearsal machine">
+              <Panel title="signal sources — rehearsal machine" right={<button type="button" onClick={onGoToSettle} className="font-mono text-[10px] text-emerald-300 hover:underline">real testnet settle →</button>}>
                 <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
                   {EVENTS.map((e) => (
                     <button key={e.type} onClick={() => fire(e.type)} disabled={busy}
