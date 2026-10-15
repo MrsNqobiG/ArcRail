@@ -1,4 +1,4 @@
-import { isHex, type Hex } from "viem";
+import { isHex, type Hex, type PublicClient } from "viem";
 import { ARC_EXPLORER, ARC_EXPLORER_MIRROR, ARC_TESTNET_CHAIN_ID } from "./arc-chain.ts";
 import { formatUsdc } from "./policy.ts";
 import { collectWitnesses, healthyRpc, type Witness } from "./rpc.ts";
@@ -144,10 +144,19 @@ export interface NativeSample {
 export async function sampleNativeTransfer(): Promise<NativeSample | null> {
   const { client } = await healthyRpc();
   const latest = await client.getBlock({ blockTag: "latest" });
-  const nums = Array.from({ length: 16 }, (_, i) => latest.number - BigInt(i));
-  const blocks = await Promise.all(
-    nums.map((blockNumber) => client.getBlock({ blockNumber, includeTransactions: true })),
-  );
+  // Blocks are ~0.5 s apart and testnet traffic is bursty: walk back in batches of 16, up to 240 blocks (~2 min).
+  for (let batch = 0; batch < 15; batch++) {
+    const nums = Array.from({ length: 16 }, (_, i) => latest.number - BigInt(batch * 16 + i)).filter((n) => n >= 0n);
+    const blocks = await Promise.all(
+      nums.map((blockNumber) => client.getBlock({ blockNumber, includeTransactions: true })),
+    );
+    const hit = firstNativeTransfer(blocks);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function firstNativeTransfer(blocks: Awaited<ReturnType<PublicClient["getBlock"]>>[]): NativeSample | null {
   for (const block of blocks) {
     for (const tx of block.transactions) {
       if (typeof tx === "string") continue;
@@ -158,7 +167,7 @@ export async function sampleNativeTransfer(): Promise<NativeSample | null> {
           valueUsdc: formatUsdc(tx.value),
           from: tx.from,
           to: tx.to,
-          blockNumber: block.number.toString(),
+          blockNumber: String(block.number ?? ""),
         };
       }
     }

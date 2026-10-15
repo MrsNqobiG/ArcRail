@@ -267,7 +267,7 @@ export async function handleArcApi(request: Request): Promise<Response> {
     if (route[0] === "chain" && method === "GET") {
       if (url.searchParams.get("sample") === "1") {
         const sample = await sampleNativeTransfer();
-        if (!sample) return json({ error: "No plain native transfer in the last few blocks." }, 404);
+        if (!sample) return json({ error: "No plain native transfer in the last two minutes of blocks. Try again in a moment." }, 404);
         const proof = await probeChain(sample.hash);
         return json({ sample, ...proof });
       }
