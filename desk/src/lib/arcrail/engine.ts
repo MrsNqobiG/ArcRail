@@ -142,7 +142,8 @@ export async function createPayment(input: {
 function parseMinor(dec: string): number {
   const m = /^(\d+)(?:\.(\d{1,6}))?$/.exec(dec.trim())
   if (!m) fail(`400 AMOUNT_NOT_REPRESENTABLE: "${dec}" is not a decimal string`)
-  // Bound the whole part first so every value stays an exact integer (<= 5e9 minor units, far below 2^53).
+  // Bound the whole part first: the result is at most 5000999999 minor units, an exact integer far below 2^53.
+  // The 5000 USDC cap itself is enforced by the callers (amount and fee).
   if (m[1].replace(/^0+/, '').length > 4 || Number(m[1]) > 5000) fail(`400 AMOUNT_NOT_REPRESENTABLE: "${dec}" exceeds 5000`)
   const frac = (m[2] ?? '').padEnd(6, '0')
   return Number(m[1]) * 1_000_000 + Number(frac)

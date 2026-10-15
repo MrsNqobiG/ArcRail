@@ -11,7 +11,8 @@ export function installApiShim() {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     if (!raw.startsWith('/api/')) return realFetch(input, init)
-    const url = `https://arcrail-demo.local${raw}`
+    // Only used to parse the path inside the page; this URL is never fetched.
+    const url = new URL(raw, window.location.origin).href
     const request = input instanceof Request ? new Request(url, input) : new Request(url, init)
     return handleArcApi(request)
   }
